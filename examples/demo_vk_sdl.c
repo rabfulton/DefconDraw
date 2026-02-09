@@ -1101,14 +1101,14 @@ static int create_vg_context(app* a) {
         return 0;
     }
 
-    vg_retro_params retro = {
-        .bloom_strength = 0.75f,
-        .bloom_radius_px = 4.0f,
-        .persistence_decay = 0.92f,
-        .jitter_amount = 0.15f,
-        .flicker_amount = 0.1f
-    };
-    vg_set_retro_params(a->vg, &retro);
+    vg_crt_profile crt = {0};
+    vg_make_crt_profile(VG_CRT_PRESET_WOPR, &crt);
+    crt.bloom_strength = 0.75f;
+    crt.bloom_radius_px = 4.0f;
+    crt.persistence_decay = 0.92f;
+    crt.jitter_amount = 0.15f;
+    crt.flicker_amount = 0.1f;
+    vg_set_crt_profile(a->vg, &crt);
     return 1;
 }
 

@@ -51,6 +51,72 @@ static int vg_style_is_valid(const vg_stroke_style* style) {
     return 1;
 }
 
+static vg_crt_profile vg_crt_profile_for_preset(vg_crt_preset preset) {
+    vg_crt_profile p = {0};
+    switch (preset) {
+        case VG_CRT_PRESET_CLEAN_VECTOR:
+            p.beam_core_width_px = 1.25f;
+            p.beam_halo_width_px = 1.4f;
+            p.beam_intensity = 1.0f;
+            p.bloom_strength = 0.25f;
+            p.bloom_radius_px = 2.0f;
+            p.persistence_decay = 0.86f;
+            p.jitter_amount = 0.01f;
+            p.flicker_amount = 0.01f;
+            p.vignette_strength = 0.05f;
+            p.barrel_distortion = 0.0f;
+            p.scanline_strength = 0.03f;
+            p.noise_strength = 0.02f;
+            break;
+        case VG_CRT_PRESET_HEAVY_CRT:
+            p.beam_core_width_px = 2.0f;
+            p.beam_halo_width_px = 4.2f;
+            p.beam_intensity = 1.3f;
+            p.bloom_strength = 1.15f;
+            p.bloom_radius_px = 6.0f;
+            p.persistence_decay = 0.94f;
+            p.jitter_amount = 0.18f;
+            p.flicker_amount = 0.14f;
+            p.vignette_strength = 0.24f;
+            p.barrel_distortion = 0.13f;
+            p.scanline_strength = 0.22f;
+            p.noise_strength = 0.08f;
+            break;
+        case VG_CRT_PRESET_WOPR:
+        default:
+            p.beam_core_width_px = 1.6f;
+            p.beam_halo_width_px = 2.8f;
+            p.beam_intensity = 1.15f;
+            p.bloom_strength = 0.75f;
+            p.bloom_radius_px = 4.0f;
+            p.persistence_decay = 0.90f;
+            p.jitter_amount = 0.08f;
+            p.flicker_amount = 0.06f;
+            p.vignette_strength = 0.14f;
+            p.barrel_distortion = 0.06f;
+            p.scanline_strength = 0.12f;
+            p.noise_strength = 0.04f;
+            break;
+    }
+    return p;
+}
+
+static void vg_retro_from_crt(vg_retro_params* retro, const vg_crt_profile* crt) {
+    retro->bloom_strength = crt->bloom_strength;
+    retro->bloom_radius_px = crt->bloom_radius_px;
+    retro->persistence_decay = crt->persistence_decay;
+    retro->jitter_amount = crt->jitter_amount;
+    retro->flicker_amount = crt->flicker_amount;
+}
+
+static void vg_crt_from_retro(vg_crt_profile* crt, const vg_retro_params* retro) {
+    crt->bloom_strength = retro->bloom_strength;
+    crt->bloom_radius_px = retro->bloom_radius_px;
+    crt->persistence_decay = retro->persistence_decay;
+    crt->jitter_amount = retro->jitter_amount;
+    crt->flicker_amount = retro->flicker_amount;
+}
+
 #define VG_FONT_UP 0xfeu
 #define VG_FONT_LAST 0xffu
 #define VG_FONT_POINT(x, y) (uint8_t)((((x) & 0xFu) << 4) | ((y) & 0xFu))
@@ -226,11 +292,8 @@ vg_result vg_context_create(const vg_context_desc* desc, vg_context** out_ctx) {
     }
 
     ctx->desc = *desc;
-    ctx->retro.bloom_strength = 0.5f;
-    ctx->retro.bloom_radius_px = 3.0f;
-    ctx->retro.persistence_decay = 0.90f;
-    ctx->retro.jitter_amount = 0.0f;
-    ctx->retro.flicker_amount = 0.0f;
+    ctx->crt = vg_crt_profile_for_preset(VG_CRT_PRESET_WOPR);
+    vg_retro_from_crt(&ctx->retro, &ctx->crt);
 
     switch (desc->backend) {
         case VG_BACKEND_VULKAN:
@@ -299,8 +362,12 @@ void vg_set_retro_params(vg_context* ctx, const vg_retro_params* params) {
         return;
     }
     ctx->retro = *params;
+    vg_crt_from_retro(&ctx->crt, params);
     if (ctx->backend.ops && ctx->backend.ops->set_retro_params) {
         ctx->backend.ops->set_retro_params(ctx, params);
+    }
+    if (ctx->backend.ops && ctx->backend.ops->set_crt_profile) {
+        ctx->backend.ops->set_crt_profile(ctx, &ctx->crt);
     }
 }
 
@@ -309,6 +376,34 @@ void vg_get_retro_params(vg_context* ctx, vg_retro_params* out_params) {
         return;
     }
     *out_params = ctx->retro;
+}
+
+void vg_make_crt_profile(vg_crt_preset preset, vg_crt_profile* out_profile) {
+    if (!out_profile) {
+        return;
+    }
+    *out_profile = vg_crt_profile_for_preset(preset);
+}
+
+void vg_set_crt_profile(vg_context* ctx, const vg_crt_profile* profile) {
+    if (!ctx || !profile) {
+        return;
+    }
+    ctx->crt = *profile;
+    vg_retro_from_crt(&ctx->retro, &ctx->crt);
+    if (ctx->backend.ops && ctx->backend.ops->set_crt_profile) {
+        ctx->backend.ops->set_crt_profile(ctx, &ctx->crt);
+    }
+    if (ctx->backend.ops && ctx->backend.ops->set_retro_params) {
+        ctx->backend.ops->set_retro_params(ctx, &ctx->retro);
+    }
+}
+
+void vg_get_crt_profile(vg_context* ctx, vg_crt_profile* out_profile) {
+    if (!ctx || !out_profile) {
+        return;
+    }
+    *out_profile = ctx->crt;
 }
 
 vg_result vg_path_create(vg_context* ctx, vg_path** out_path) {

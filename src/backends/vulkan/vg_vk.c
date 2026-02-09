@@ -44,6 +44,7 @@ typedef struct vg_vk_backend {
     vg_backend_vulkan_desc desc;
     vg_frame_desc frame;
     vg_retro_params retro;
+    vg_crt_profile crt;
     uint64_t frame_index;
 
     vg_vec2* stroke_vertices;
@@ -668,41 +669,44 @@ static vg_result vg_vk_submit_recorded_draws(vg_vk_backend* backend) {
 #if VG_HAS_VK_INTERNAL_PIPELINE
             VkPipeline current_pipeline = VK_NULL_HANDLE;
 #endif
-            for (uint32_t i = 0; i < backend->draw_count; ++i) {
-                const vg_vk_draw_cmd* cmd = &backend->draws[i];
-                if (cmd->vertex_count == 0u) {
-                    continue;
-                }
-
-#if VG_HAS_VK_INTERNAL_PIPELINE
-                if (backend->pipeline_layout != VK_NULL_HANDLE) {
-                    VkPipeline needed = cmd->style.blend == VG_BLEND_ADDITIVE ? backend->pipeline_additive : backend->pipeline_alpha;
-                    if (needed != VK_NULL_HANDLE && needed != current_pipeline) {
-                        vkCmdBindPipeline(backend->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, needed);
-                        current_pipeline = needed;
+            for (int pass = 0; pass < 2; ++pass) {
+                vg_blend_mode want_blend = pass == 0 ? VG_BLEND_ALPHA : VG_BLEND_ADDITIVE;
+                for (uint32_t i = 0; i < backend->draw_count; ++i) {
+                    const vg_vk_draw_cmd* cmd = &backend->draws[i];
+                    if (cmd->vertex_count == 0u || cmd->style.blend != want_blend) {
+                        continue;
                     }
 
-                    vg_vk_push_constants pc = {0};
-                    pc.color[0] = cmd->style.color.r;
-                    pc.color[1] = cmd->style.color.g;
-                    pc.color[2] = cmd->style.color.b;
-                    pc.color[3] = cmd->style.color.a;
-                    pc.params[0] = (float)backend->frame.width;
-                    pc.params[1] = (float)backend->frame.height;
-                    pc.params[2] = cmd->style.intensity;
-                    pc.params[3] = 0.0f;
+#if VG_HAS_VK_INTERNAL_PIPELINE
+                    if (backend->pipeline_layout != VK_NULL_HANDLE) {
+                        VkPipeline needed = cmd->style.blend == VG_BLEND_ADDITIVE ? backend->pipeline_additive : backend->pipeline_alpha;
+                        if (needed != VK_NULL_HANDLE && needed != current_pipeline) {
+                            vkCmdBindPipeline(backend->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, needed);
+                            current_pipeline = needed;
+                        }
 
-                    vkCmdPushConstants(
-                        backend->command_buffer,
-                        backend->pipeline_layout,
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                        0,
-                        sizeof(pc),
-                        &pc
-                    );
-                }
+                        vg_vk_push_constants pc = {0};
+                        pc.color[0] = cmd->style.color.r;
+                        pc.color[1] = cmd->style.color.g;
+                        pc.color[2] = cmd->style.color.b;
+                        pc.color[3] = cmd->style.color.a;
+                        pc.params[0] = (float)backend->frame.width;
+                        pc.params[1] = (float)backend->frame.height;
+                        pc.params[2] = cmd->style.intensity;
+                        pc.params[3] = 0.0f;
+
+                        vkCmdPushConstants(
+                            backend->command_buffer,
+                            backend->pipeline_layout,
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                            0,
+                            sizeof(pc),
+                            &pc
+                        );
+                    }
 #endif
-                vkCmdDraw(backend->command_buffer, cmd->vertex_count, 1, cmd->first_vertex, 0);
+                    vkCmdDraw(backend->command_buffer, cmd->vertex_count, 1, cmd->first_vertex, 0);
+                }
             }
         }
     }
@@ -849,12 +853,12 @@ static void vg_vk_apply_bloom_rgba8(
         return;
     }
 
-    float strength = backend->retro.bloom_strength;
+    float strength = backend->crt.bloom_strength;
     if (strength <= 0.0f) {
         return;
     }
 
-    int radius = (int)(backend->retro.bloom_radius_px + 0.5f);
+    int radius = (int)(backend->crt.bloom_radius_px + 0.5f);
     if (radius < 1) {
         radius = 1;
     }
@@ -962,14 +966,14 @@ static vg_result vg_vk_debug_rasterize_rgba8(
         if (end > backend->stroke_vertex_count) {
             return VG_ERROR_BACKEND;
         }
-        float flicker = backend->retro.flicker_amount;
+        float flicker = backend->crt.flicker_amount;
         float flicker_noise = vg_vk_rand_signed((uint32_t)backend->frame_index * 7919u + i * 104729u);
         float cmd_intensity = cmd->style.intensity * (1.0f + flicker * flicker_noise);
         if (cmd_intensity < 0.0f) {
             cmd_intensity = 0.0f;
         }
 
-        float jitter = backend->retro.jitter_amount;
+        float jitter = backend->crt.jitter_amount;
         float jx = jitter * vg_vk_rand_signed((uint32_t)backend->frame_index * 1009u + i * 9176u);
         float jy = jitter * vg_vk_rand_signed((uint32_t)backend->frame_index * 2473u + i * 3083u);
 
@@ -1043,6 +1047,24 @@ static void vg_vk_set_retro_params(vg_context* ctx, const vg_retro_params* param
         return;
     }
     backend->retro = *params;
+    backend->crt.bloom_strength = params->bloom_strength;
+    backend->crt.bloom_radius_px = params->bloom_radius_px;
+    backend->crt.persistence_decay = params->persistence_decay;
+    backend->crt.jitter_amount = params->jitter_amount;
+    backend->crt.flicker_amount = params->flicker_amount;
+}
+
+static void vg_vk_set_crt_profile(vg_context* ctx, const vg_crt_profile* profile) {
+    vg_vk_backend* backend = vg_vk_backend_from(ctx);
+    if (!backend || !profile) {
+        return;
+    }
+    backend->crt = *profile;
+    backend->retro.bloom_strength = profile->bloom_strength;
+    backend->retro.bloom_radius_px = profile->bloom_radius_px;
+    backend->retro.persistence_decay = profile->persistence_decay;
+    backend->retro.jitter_amount = profile->jitter_amount;
+    backend->retro.flicker_amount = profile->flicker_amount;
 }
 
 static vg_result vg_vk_draw_path_stroke(vg_context* ctx, const vg_path* path, const vg_stroke_style* style) {
@@ -1120,6 +1142,7 @@ vg_result vg_vk_backend_create(vg_context* ctx) {
         .begin_frame = vg_vk_begin_frame,
         .end_frame = vg_vk_end_frame,
         .set_retro_params = vg_vk_set_retro_params,
+        .set_crt_profile = vg_vk_set_crt_profile,
         .draw_path_stroke = vg_vk_draw_path_stroke,
         .draw_polyline = vg_vk_draw_polyline,
         .debug_rasterize_rgba8 = vg_vk_debug_rasterize_rgba8
@@ -1142,6 +1165,7 @@ vg_result vg_vk_backend_create(vg_context* ctx) {
         backend->desc.vertex_binding = 0u;
     }
     backend->retro = ctx->retro;
+    backend->crt = ctx->crt;
 
 #if VG_HAS_VULKAN
     backend->physical_device = (VkPhysicalDevice)backend->desc.physical_device;

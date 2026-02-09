@@ -14,6 +14,7 @@ This repository currently provides:
 - an SDL real-time preview (`examples/demo_sdl.c`)
 - a Vulkan + SDL end-to-end example (`examples/demo_vk_sdl.c`)
 - basic UI/text primitives: `vg_draw_text`, `vg_draw_rect`, `vg_draw_button`, `vg_draw_slider`
+- CRT profile API with presets: `vg_make_crt_profile`, `vg_set_crt_profile`, `vg_get_crt_profile`
 
 `vg_draw_polyline`/`vg_draw_path_stroke` now generate CPU-side stroke triangle meshes in the Vulkan backend.
 A frame-local draw-command buffer is recorded.
@@ -25,6 +26,7 @@ The SDL preview currently applies bloom, flicker, jitter, and persistence using 
 The Vulkan + SDL example now includes persistence by retaining swapchain contents and applying a fullscreen fade stroke each frame.
 The Vulkan + SDL example also applies flicker/jitter and a real bloom composite pass (scene RT -> bloom RT -> swapchain composite).
 The Vulkan + SDL example now includes an on-screen debug panel (FPS + live retro parameter tuning) driven by vector button/slider primitives.
+The Vulkan backend submission path batches recorded draws by blend mode to reduce pipeline switches.
 
 Text rendering currently uses an embedded line-stroke font table in the library.
 `fonts/Vectorb.ttf` is available in-tree as a source asset for future font-import work.

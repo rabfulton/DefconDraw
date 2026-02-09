@@ -72,6 +72,23 @@ For Vulkan backend:
 
 These currently drive preview-path retro effects and are also stored in context/backend state.
 
+### `vg_crt_profile`
+
+Unified display-look profile for retro tuning.
+
+- Beam: `beam_core_width_px`, `beam_halo_width_px`, `beam_intensity`
+- Glow: `bloom_strength`, `bloom_radius_px`
+- Temporal: `persistence_decay`, `jitter_amount`, `flicker_amount`
+- Screen: `vignette_strength`, `barrel_distortion`, `scanline_strength`, `noise_strength`
+
+`vg_retro_params` remains supported as a compatibility subset.
+
+### `vg_crt_preset`
+
+- `VG_CRT_PRESET_CLEAN_VECTOR`
+- `VG_CRT_PRESET_WOPR`
+- `VG_CRT_PRESET_HEAVY_CRT`
+
 ### `vg_backend_vulkan_desc`
 
 All Vulkan handles are passed as opaque `void*` in the public header and interpreted internally as Vulkan handles.
@@ -142,6 +159,18 @@ Stores and forwards retro params to backend state.
 ### `vg_get_retro_params(vg_context* ctx, vg_retro_params* out_params)`
 
 Reads current retro params.
+
+### `vg_make_crt_profile(vg_crt_preset preset, vg_crt_profile* out_profile)`
+
+Builds a profile from a preset.
+
+### `vg_set_crt_profile(vg_context* ctx, const vg_crt_profile* profile)`
+
+Stores and forwards full CRT profile to backend state.
+
+### `vg_get_crt_profile(vg_context* ctx, vg_crt_profile* out_profile)`
+
+Reads current CRT profile.
 
 ## Path API
 
@@ -294,6 +323,7 @@ If this path is unavailable, app can still bind its own graphics pipeline before
 - Persistence in Vulkan output is app-driven (see `examples/demo_vk_sdl.c` for a render-pass `LOAD` + fullscreen fade pattern).
 - Demo bloom in Vulkan example uses a post-process composite path (offscreen scene target + bloom target + fullscreen composite).
 - Built-in text uses an embedded stroke font table; loading `.ttf` line fonts is not implemented yet.
+- Vulkan backend currently batches by blend mode when submitting recorded draws (alpha pass, then additive pass) to reduce pipeline churn.
 
 ## Quick Usage Skeleton
 

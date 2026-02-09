@@ -27,6 +27,7 @@ typedef struct vg_backend_ops {
     vg_result (*begin_frame)(struct vg_context* ctx, const vg_frame_desc* frame);
     vg_result (*end_frame)(struct vg_context* ctx);
     void (*set_retro_params)(struct vg_context* ctx, const vg_retro_params* params);
+    void (*set_crt_profile)(struct vg_context* ctx, const vg_crt_profile* profile);
     vg_result (*draw_path_stroke)(struct vg_context* ctx, const struct vg_path* path, const vg_stroke_style* style);
     vg_result (*draw_polyline)(struct vg_context* ctx, const vg_vec2* points, size_t count, const vg_stroke_style* style, int closed);
     vg_result (*debug_rasterize_rgba8)(struct vg_context* ctx, uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride_bytes);
@@ -41,6 +42,7 @@ struct vg_context {
     vg_context_desc desc;
     vg_frame_desc frame;
     vg_retro_params retro;
+    vg_crt_profile crt;
     int in_frame;
     vg_backend_state backend;
 };

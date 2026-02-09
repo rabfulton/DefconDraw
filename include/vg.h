@@ -84,6 +84,27 @@ typedef struct vg_retro_params {
     float flicker_amount;
 } vg_retro_params;
 
+typedef struct vg_crt_profile {
+    float beam_core_width_px;
+    float beam_halo_width_px;
+    float beam_intensity;
+    float bloom_strength;
+    float bloom_radius_px;
+    float persistence_decay;
+    float jitter_amount;
+    float flicker_amount;
+    float vignette_strength;
+    float barrel_distortion;
+    float scanline_strength;
+    float noise_strength;
+} vg_crt_profile;
+
+typedef enum vg_crt_preset {
+    VG_CRT_PRESET_CLEAN_VECTOR = 0,
+    VG_CRT_PRESET_WOPR = 1,
+    VG_CRT_PRESET_HEAVY_CRT = 2
+} vg_crt_preset;
+
 typedef struct vg_backend_vulkan_desc {
     void* instance;
     void* physical_device;
@@ -114,6 +135,9 @@ vg_result vg_end_frame(vg_context* ctx);
 
 void vg_set_retro_params(vg_context* ctx, const vg_retro_params* params);
 void vg_get_retro_params(vg_context* ctx, vg_retro_params* out_params);
+void vg_make_crt_profile(vg_crt_preset preset, vg_crt_profile* out_profile);
+void vg_set_crt_profile(vg_context* ctx, const vg_crt_profile* profile);
+void vg_get_crt_profile(vg_context* ctx, vg_crt_profile* out_profile);
 
 vg_result vg_path_create(vg_context* ctx, vg_path** out_path);
 void vg_path_destroy(vg_path* path);
