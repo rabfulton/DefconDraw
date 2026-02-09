@@ -1,0 +1,642 @@
+#include "vg.h"
+#include "vg_internal.h"
+
+#include <ctype.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int vg_path_reserve(vg_path* path, size_t extra) {
+    if (path->count + extra <= path->cap) {
+        return 1;
+    }
+
+    size_t new_cap = path->cap == 0 ? 32u : path->cap * 2u;
+    while (new_cap < path->count + extra) {
+        new_cap *= 2u;
+    }
+
+    vg_path_cmd* next = (vg_path_cmd*)realloc(path->cmds, new_cap * sizeof(*next));
+    if (!next) {
+        return 0;
+    }
+
+    path->cmds = next;
+    path->cap = new_cap;
+    return 1;
+}
+
+static int vg_style_is_valid(const vg_stroke_style* style) {
+    if (!style) {
+        return 0;
+    }
+    if (!isfinite(style->width_px) || style->width_px <= 0.0f) {
+        return 0;
+    }
+    if (!isfinite(style->intensity) || style->intensity < 0.0f) {
+        return 0;
+    }
+    if (!isfinite(style->miter_limit) || style->miter_limit <= 0.0f) {
+        return 0;
+    }
+    if (style->cap < VG_LINE_CAP_BUTT || style->cap > VG_LINE_CAP_SQUARE) {
+        return 0;
+    }
+    if (style->join < VG_LINE_JOIN_MITER || style->join > VG_LINE_JOIN_BEVEL) {
+        return 0;
+    }
+    if (style->blend < VG_BLEND_ALPHA || style->blend > VG_BLEND_ADDITIVE) {
+        return 0;
+    }
+    return 1;
+}
+
+#define VG_FONT_UP 0xfeu
+#define VG_FONT_LAST 0xffu
+#define VG_FONT_POINT(x, y) (uint8_t)((((x) & 0xFu) << 4) | ((y) & 0xFu))
+
+static const uint8_t vg_glyph_space[] = {VG_FONT_LAST};
+static const uint8_t vg_glyph_dot[] = {VG_FONT_POINT(3, 0), VG_FONT_POINT(4, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_comma[] = {VG_FONT_POINT(2, 0), VG_FONT_POINT(4, 2), VG_FONT_LAST};
+static const uint8_t vg_glyph_dash[] = {VG_FONT_POINT(2, 6), VG_FONT_POINT(6, 6), VG_FONT_LAST};
+static const uint8_t vg_glyph_plus[] = {VG_FONT_POINT(1, 6), VG_FONT_POINT(7, 6), VG_FONT_UP, VG_FONT_POINT(4, 9), VG_FONT_POINT(4, 3), VG_FONT_LAST};
+static const uint8_t vg_glyph_colon[] = {VG_FONT_POINT(4, 9), VG_FONT_POINT(4, 7), VG_FONT_UP, VG_FONT_POINT(4, 5), VG_FONT_POINT(4, 3), VG_FONT_LAST};
+static const uint8_t vg_glyph_slash[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_percent[] = {
+    VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(2, 10), VG_FONT_POINT(2, 8), VG_FONT_UP, VG_FONT_POINT(6, 4), VG_FONT_POINT(6, 2), VG_FONT_LAST
+};
+static const uint8_t vg_glyph_lparen[] = {VG_FONT_POINT(6, 0), VG_FONT_POINT(2, 4), VG_FONT_POINT(2, 8), VG_FONT_POINT(6, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_rparen[] = {VG_FONT_POINT(2, 0), VG_FONT_POINT(6, 4), VG_FONT_POINT(6, 8), VG_FONT_POINT(2, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_question[] = {
+    VG_FONT_POINT(0, 8), VG_FONT_POINT(4, 12), VG_FONT_POINT(8, 8), VG_FONT_POINT(4, 4), VG_FONT_UP, VG_FONT_POINT(4, 1), VG_FONT_POINT(4, 0), VG_FONT_LAST
+};
+
+static const uint8_t vg_glyph_0[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 12), VG_FONT_POINT(0, 12), VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_1[] = {VG_FONT_POINT(4, 0), VG_FONT_POINT(4, 12), VG_FONT_POINT(3, 10), VG_FONT_LAST};
+static const uint8_t vg_glyph_2[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 7), VG_FONT_POINT(0, 5), VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_3[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 0), VG_FONT_POINT(0, 0), VG_FONT_UP, VG_FONT_POINT(0, 6), VG_FONT_POINT(8, 6), VG_FONT_LAST};
+static const uint8_t vg_glyph_4[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(0, 6), VG_FONT_POINT(8, 6), VG_FONT_UP, VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_5[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 6), VG_FONT_POINT(0, 7), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_6[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 5), VG_FONT_POINT(0, 7), VG_FONT_LAST};
+static const uint8_t vg_glyph_7[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 6), VG_FONT_POINT(4, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_8[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 12), VG_FONT_POINT(0, 12), VG_FONT_POINT(0, 0), VG_FONT_UP, VG_FONT_POINT(0, 6), VG_FONT_POINT(8, 6), VG_FONT_LAST};
+static const uint8_t vg_glyph_9[] = {VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 12), VG_FONT_POINT(0, 12), VG_FONT_POINT(0, 7), VG_FONT_POINT(8, 5), VG_FONT_LAST};
+
+static const uint8_t vg_glyph_A[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 8), VG_FONT_POINT(4, 12), VG_FONT_POINT(8, 8), VG_FONT_POINT(8, 0), VG_FONT_UP, VG_FONT_POINT(0, 4), VG_FONT_POINT(8, 4), VG_FONT_LAST};
+static const uint8_t vg_glyph_B[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(4, 12), VG_FONT_POINT(8, 10), VG_FONT_POINT(4, 6), VG_FONT_POINT(8, 2), VG_FONT_POINT(4, 0), VG_FONT_POINT(0, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_C[] = {VG_FONT_POINT(8, 0), VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_D[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(4, 12), VG_FONT_POINT(8, 8), VG_FONT_POINT(8, 4), VG_FONT_POINT(4, 0), VG_FONT_POINT(0, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_E[] = {VG_FONT_POINT(8, 0), VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(0, 6), VG_FONT_POINT(6, 6), VG_FONT_LAST};
+static const uint8_t vg_glyph_F[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(0, 6), VG_FONT_POINT(6, 6), VG_FONT_LAST};
+static const uint8_t vg_glyph_G[] = {VG_FONT_POINT(6, 6), VG_FONT_POINT(8, 4), VG_FONT_POINT(8, 0), VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_H[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_UP, VG_FONT_POINT(0, 6), VG_FONT_POINT(8, 6), VG_FONT_UP, VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_I[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_UP, VG_FONT_POINT(4, 0), VG_FONT_POINT(4, 12), VG_FONT_UP, VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_J[] = {VG_FONT_POINT(0, 4), VG_FONT_POINT(4, 0), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_K[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_UP, VG_FONT_POINT(8, 12), VG_FONT_POINT(0, 6), VG_FONT_POINT(6, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_L[] = {VG_FONT_POINT(8, 0), VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_M[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(4, 8), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_N[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_O[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 0), VG_FONT_POINT(0, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_P[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 6), VG_FONT_POINT(0, 5), VG_FONT_LAST};
+static const uint8_t vg_glyph_Q[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 4), VG_FONT_POINT(0, 0), VG_FONT_UP, VG_FONT_POINT(4, 4), VG_FONT_POINT(8, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_R[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(8, 6), VG_FONT_POINT(0, 5), VG_FONT_UP, VG_FONT_POINT(4, 5), VG_FONT_POINT(8, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_S[] = {VG_FONT_POINT(0, 2), VG_FONT_POINT(2, 0), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 5), VG_FONT_POINT(0, 7), VG_FONT_POINT(0, 12), VG_FONT_POINT(6, 12), VG_FONT_POINT(8, 10), VG_FONT_LAST};
+static const uint8_t vg_glyph_T[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(4, 12), VG_FONT_POINT(4, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_U[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(0, 2), VG_FONT_POINT(4, 0), VG_FONT_POINT(8, 2), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_V[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(4, 0), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_W[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(2, 0), VG_FONT_POINT(4, 4), VG_FONT_POINT(6, 0), VG_FONT_POINT(8, 12), VG_FONT_LAST};
+static const uint8_t vg_glyph_X[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_Y[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(4, 6), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(4, 6), VG_FONT_POINT(4, 0), VG_FONT_LAST};
+static const uint8_t vg_glyph_Z[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_UP, VG_FONT_POINT(2, 6), VG_FONT_POINT(6, 6), VG_FONT_LAST};
+
+static const uint8_t* vg_lookup_glyph(char c) {
+    unsigned char uc = (unsigned char)c;
+    char up = (char)toupper((int)uc);
+    switch (up) {
+        case ' ':
+            return vg_glyph_space;
+        case '.':
+            return vg_glyph_dot;
+        case ',':
+            return vg_glyph_comma;
+        case '-':
+            return vg_glyph_dash;
+        case '+':
+            return vg_glyph_plus;
+        case ':':
+            return vg_glyph_colon;
+        case '/':
+            return vg_glyph_slash;
+        case '%':
+            return vg_glyph_percent;
+        case '(':
+            return vg_glyph_lparen;
+        case ')':
+            return vg_glyph_rparen;
+        case '0':
+            return vg_glyph_0;
+        case '1':
+            return vg_glyph_1;
+        case '2':
+            return vg_glyph_2;
+        case '3':
+            return vg_glyph_3;
+        case '4':
+            return vg_glyph_4;
+        case '5':
+            return vg_glyph_5;
+        case '6':
+            return vg_glyph_6;
+        case '7':
+            return vg_glyph_7;
+        case '8':
+            return vg_glyph_8;
+        case '9':
+            return vg_glyph_9;
+        case 'A':
+            return vg_glyph_A;
+        case 'B':
+            return vg_glyph_B;
+        case 'C':
+            return vg_glyph_C;
+        case 'D':
+            return vg_glyph_D;
+        case 'E':
+            return vg_glyph_E;
+        case 'F':
+            return vg_glyph_F;
+        case 'G':
+            return vg_glyph_G;
+        case 'H':
+            return vg_glyph_H;
+        case 'I':
+            return vg_glyph_I;
+        case 'J':
+            return vg_glyph_J;
+        case 'K':
+            return vg_glyph_K;
+        case 'L':
+            return vg_glyph_L;
+        case 'M':
+            return vg_glyph_M;
+        case 'N':
+            return vg_glyph_N;
+        case 'O':
+            return vg_glyph_O;
+        case 'P':
+            return vg_glyph_P;
+        case 'Q':
+            return vg_glyph_Q;
+        case 'R':
+            return vg_glyph_R;
+        case 'S':
+            return vg_glyph_S;
+        case 'T':
+            return vg_glyph_T;
+        case 'U':
+            return vg_glyph_U;
+        case 'V':
+            return vg_glyph_V;
+        case 'W':
+            return vg_glyph_W;
+        case 'X':
+            return vg_glyph_X;
+        case 'Y':
+            return vg_glyph_Y;
+        case 'Z':
+            return vg_glyph_Z;
+        default:
+            return vg_glyph_question;
+    }
+}
+
+static float vg_text_advance(float size_px, float letter_spacing_px) {
+    float scale = size_px / 12.0f;
+    return 12.0f * scale + letter_spacing_px;
+}
+
+vg_result vg_context_create(const vg_context_desc* desc, vg_context** out_ctx) {
+    if (!desc || !out_ctx) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+
+    vg_context* ctx = (vg_context*)calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+
+    ctx->desc = *desc;
+    ctx->retro.bloom_strength = 0.5f;
+    ctx->retro.bloom_radius_px = 3.0f;
+    ctx->retro.persistence_decay = 0.90f;
+    ctx->retro.jitter_amount = 0.0f;
+    ctx->retro.flicker_amount = 0.0f;
+
+    switch (desc->backend) {
+        case VG_BACKEND_VULKAN:
+            if (vg_vk_backend_create(ctx) != VG_OK) {
+                free(ctx);
+                return VG_ERROR_BACKEND;
+            }
+            break;
+        default:
+            free(ctx);
+            return VG_ERROR_UNSUPPORTED;
+    }
+
+    *out_ctx = ctx;
+    return VG_OK;
+}
+
+void vg_context_destroy(vg_context* ctx) {
+    if (!ctx) {
+        return;
+    }
+    if (ctx->backend.ops && ctx->backend.ops->destroy) {
+        ctx->backend.ops->destroy(ctx);
+    }
+    free(ctx);
+}
+
+vg_result vg_begin_frame(vg_context* ctx, const vg_frame_desc* frame) {
+    if (!ctx || !frame || frame->width == 0 || frame->height == 0) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (ctx->in_frame) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (ctx->backend.ops && ctx->backend.ops->begin_frame) {
+        vg_result backend_res = ctx->backend.ops->begin_frame(ctx, frame);
+        if (backend_res != VG_OK) {
+            return backend_res;
+        }
+    }
+
+    ctx->frame = *frame;
+    ctx->in_frame = 1;
+    return VG_OK;
+}
+
+vg_result vg_end_frame(vg_context* ctx) {
+    if (!ctx || !ctx->in_frame) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (ctx->backend.ops && ctx->backend.ops->end_frame) {
+        vg_result backend_res = ctx->backend.ops->end_frame(ctx);
+        if (backend_res != VG_OK) {
+            return backend_res;
+        }
+    }
+
+    ctx->in_frame = 0;
+    return VG_OK;
+}
+
+void vg_set_retro_params(vg_context* ctx, const vg_retro_params* params) {
+    if (!ctx || !params) {
+        return;
+    }
+    ctx->retro = *params;
+    if (ctx->backend.ops && ctx->backend.ops->set_retro_params) {
+        ctx->backend.ops->set_retro_params(ctx, params);
+    }
+}
+
+void vg_get_retro_params(vg_context* ctx, vg_retro_params* out_params) {
+    if (!ctx || !out_params) {
+        return;
+    }
+    *out_params = ctx->retro;
+}
+
+vg_result vg_path_create(vg_context* ctx, vg_path** out_path) {
+    if (!ctx || !out_path) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+
+    vg_path* path = (vg_path*)calloc(1, sizeof(*path));
+    if (!path) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+
+    path->owner = ctx;
+    *out_path = path;
+    return VG_OK;
+}
+
+void vg_path_destroy(vg_path* path) {
+    if (!path) {
+        return;
+    }
+    free(path->cmds);
+    free(path);
+}
+
+void vg_path_clear(vg_path* path) {
+    if (!path) {
+        return;
+    }
+    path->count = 0;
+}
+
+vg_result vg_path_move_to(vg_path* path, vg_vec2 p) {
+    if (!path || !vg_path_reserve(path, 1)) {
+        return path ? VG_ERROR_OUT_OF_MEMORY : VG_ERROR_INVALID_ARGUMENT;
+    }
+    path->cmds[path->count].type = VG_CMD_MOVE_TO;
+    path->cmds[path->count].p[0] = p;
+    path->count++;
+    return VG_OK;
+}
+
+vg_result vg_path_line_to(vg_path* path, vg_vec2 p) {
+    if (!path || !vg_path_reserve(path, 1)) {
+        return path ? VG_ERROR_OUT_OF_MEMORY : VG_ERROR_INVALID_ARGUMENT;
+    }
+    path->cmds[path->count].type = VG_CMD_LINE_TO;
+    path->cmds[path->count].p[0] = p;
+    path->count++;
+    return VG_OK;
+}
+
+vg_result vg_path_cubic_to(vg_path* path, vg_vec2 c0, vg_vec2 c1, vg_vec2 p1) {
+    if (!path || !vg_path_reserve(path, 1)) {
+        return path ? VG_ERROR_OUT_OF_MEMORY : VG_ERROR_INVALID_ARGUMENT;
+    }
+    path->cmds[path->count].type = VG_CMD_CUBIC_TO;
+    path->cmds[path->count].p[0] = c0;
+    path->cmds[path->count].p[1] = c1;
+    path->cmds[path->count].p[2] = p1;
+    path->count++;
+    return VG_OK;
+}
+
+vg_result vg_path_close(vg_path* path) {
+    if (!path || !vg_path_reserve(path, 1)) {
+        return path ? VG_ERROR_OUT_OF_MEMORY : VG_ERROR_INVALID_ARGUMENT;
+    }
+    path->cmds[path->count].type = VG_CMD_CLOSE;
+    memset(path->cmds[path->count].p, 0, sizeof(path->cmds[path->count].p));
+    path->count++;
+    return VG_OK;
+}
+
+vg_result vg_draw_path_stroke(vg_context* ctx, const vg_path* path, const vg_stroke_style* style) {
+    if (!ctx || !path || !style) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!ctx->in_frame || path->owner != ctx || !vg_style_is_valid(style)) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (path->count == 0) {
+        return VG_OK;
+    }
+    if (!ctx->backend.ops || !ctx->backend.ops->draw_path_stroke) {
+        return VG_ERROR_UNSUPPORTED;
+    }
+
+    return ctx->backend.ops->draw_path_stroke(ctx, path, style);
+}
+
+vg_result vg_draw_polyline(vg_context* ctx, const vg_vec2* points, size_t count, const vg_stroke_style* style, int closed) {
+    if (!ctx || !points || !style || count < 2) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!ctx->in_frame || !vg_style_is_valid(style)) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!ctx->backend.ops || !ctx->backend.ops->draw_polyline) {
+        return VG_ERROR_UNSUPPORTED;
+    }
+
+    return ctx->backend.ops->draw_polyline(ctx, points, count, style, closed);
+}
+
+float vg_measure_text(const char* text, float size_px, float letter_spacing_px) {
+    if (!text || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px)) {
+        return 0.0f;
+    }
+
+    float adv = vg_text_advance(size_px, letter_spacing_px);
+    float x = 0.0f;
+    float max_x = 0.0f;
+    for (const char* p = text; *p; ++p) {
+        if (*p == '\n') {
+            if (x > max_x) {
+                max_x = x;
+            }
+            x = 0.0f;
+            continue;
+        }
+        x += adv;
+    }
+    if (x > max_x) {
+        max_x = x;
+    }
+    return max_x;
+}
+
+vg_result vg_draw_text(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float* out_width_px
+) {
+    if (!ctx || !text || !style || !ctx->in_frame || !vg_style_is_valid(style) || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px)) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+
+    float scale = size_px / 12.0f;
+    float adv = vg_text_advance(size_px, letter_spacing_px);
+    float line_h = size_px * 1.35f;
+    float pen_x = origin.x;
+    float pen_y = origin.y;
+    float line_start_x = origin.x;
+    float max_x = pen_x;
+
+    for (const char* p = text; *p; ++p) {
+        if (*p == '\n') {
+            if (pen_x > max_x) {
+                max_x = pen_x;
+            }
+            pen_x = line_start_x;
+            pen_y += line_h;
+            continue;
+        }
+
+        const uint8_t* glyph = vg_lookup_glyph(*p);
+        vg_vec2 run[8];
+        size_t run_count = 0;
+
+        for (size_t i = 0;; ++i) {
+            uint8_t d = glyph[i];
+            if (d == VG_FONT_UP || d == VG_FONT_LAST) {
+                if (run_count >= 2u) {
+                    vg_result r = vg_draw_polyline(ctx, run, run_count, style, 0);
+                    if (r != VG_OK) {
+                        return r;
+                    }
+                }
+                run_count = 0;
+                if (d == VG_FONT_LAST) {
+                    break;
+                }
+                continue;
+            }
+
+            float dx = (float)((d >> 4) & 0xFu) * scale;
+            float dy = (float)(d & 0xFu) * scale;
+            run[run_count].x = pen_x + dx;
+            run[run_count].y = pen_y + dy;
+            run_count++;
+        }
+
+        pen_x += adv;
+        if (pen_x > max_x) {
+            max_x = pen_x;
+        }
+    }
+
+    if (out_width_px) {
+        *out_width_px = max_x - origin.x;
+    }
+    return VG_OK;
+}
+
+vg_result vg_draw_rect(vg_context* ctx, vg_rect rect, const vg_stroke_style* style) {
+    if (rect.w <= 0.0f || rect.h <= 0.0f) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    vg_vec2 points[4] = {
+        {rect.x, rect.y},
+        {rect.x + rect.w, rect.y},
+        {rect.x + rect.w, rect.y + rect.h},
+        {rect.x, rect.y + rect.h}
+    };
+    return vg_draw_polyline(ctx, points, 4u, style, 1);
+}
+
+vg_result vg_draw_button(
+    vg_context* ctx,
+    vg_rect rect,
+    const char* label,
+    float label_size_px,
+    const vg_stroke_style* border_style,
+    const vg_stroke_style* text_style,
+    int pressed
+) {
+    if (!ctx || !label || !border_style || !text_style || !isfinite(label_size_px) || label_size_px <= 0.0f) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+
+    vg_result r = vg_draw_rect(ctx, rect, border_style);
+    if (r != VG_OK) {
+        return r;
+    }
+
+    if (pressed) {
+        float inset = rect.h * 0.16f;
+        vg_rect inner = {rect.x + inset, rect.y + inset, rect.w - 2.0f * inset, rect.h - 2.0f * inset};
+        if (inner.w > 0.0f && inner.h > 0.0f) {
+            r = vg_draw_rect(ctx, inner, border_style);
+            if (r != VG_OK) {
+                return r;
+            }
+        }
+    }
+
+    float text_w = vg_measure_text(label, label_size_px, label_size_px * 0.08f);
+    vg_vec2 text_pos = {
+        rect.x + (rect.w - text_w) * 0.5f,
+        rect.y + (rect.h - label_size_px) * 0.5f
+    };
+    return vg_draw_text(ctx, label, text_pos, label_size_px, label_size_px * 0.08f, text_style, NULL);
+}
+
+vg_result vg_draw_slider(
+    vg_context* ctx,
+    vg_rect rect,
+    float value_01,
+    const vg_stroke_style* border_style,
+    const vg_stroke_style* track_style,
+    const vg_stroke_style* knob_style
+) {
+    if (!ctx || !border_style || !track_style || !knob_style || !isfinite(value_01)) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (value_01 < 0.0f) {
+        value_01 = 0.0f;
+    }
+    if (value_01 > 1.0f) {
+        value_01 = 1.0f;
+    }
+
+    vg_result r = vg_draw_rect(ctx, rect, border_style);
+    if (r != VG_OK) {
+        return r;
+    }
+
+    float track_pad = rect.h * 0.35f;
+    float track_y = rect.y + rect.h * 0.5f;
+    vg_vec2 track[2] = {
+        {rect.x + track_pad, track_y},
+        {rect.x + rect.w - track_pad, track_y}
+    };
+    r = vg_draw_polyline(ctx, track, 2u, track_style, 0);
+    if (r != VG_OK) {
+        return r;
+    }
+
+    float knob_w = rect.h * 0.52f;
+    float knob_h = rect.h * 0.74f;
+    float track_span = (track[1].x - track[0].x);
+    float knob_center = track[0].x + track_span * value_01;
+    vg_rect knob = {
+        knob_center - knob_w * 0.5f,
+        rect.y + (rect.h - knob_h) * 0.5f,
+        knob_w,
+        knob_h
+    };
+    return vg_draw_rect(ctx, knob, knob_style);
+}
+
+vg_result vg_debug_rasterize_rgba8(
+    vg_context* ctx,
+    uint8_t* pixels,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride_bytes
+) {
+    if (!ctx || !pixels || width == 0 || height == 0 || stride_bytes < width * 4u) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!ctx->in_frame) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!ctx->backend.ops || !ctx->backend.ops->debug_rasterize_rgba8) {
+        return VG_ERROR_UNSUPPORTED;
+    }
+    return ctx->backend.ops->debug_rasterize_rgba8(ctx, pixels, width, height, stride_bytes);
+}
+
+const char* vg_result_string(vg_result result) {
+    switch (result) {
+        case VG_OK:
+            return "VG_OK";
+        case VG_ERROR_INVALID_ARGUMENT:
+            return "VG_ERROR_INVALID_ARGUMENT";
+        case VG_ERROR_OUT_OF_MEMORY:
+            return "VG_ERROR_OUT_OF_MEMORY";
+        case VG_ERROR_BACKEND:
+            return "VG_ERROR_BACKEND";
+        case VG_ERROR_UNSUPPORTED:
+            return "VG_ERROR_UNSUPPORTED";
+        default:
+            return "VG_ERROR_UNKNOWN";
+    }
+}
