@@ -69,6 +69,12 @@ typedef struct vg_stroke_style {
     vg_blend_mode blend;
 } vg_stroke_style;
 
+typedef struct vg_fill_style {
+    float intensity;
+    vg_color color;
+    vg_blend_mode blend;
+} vg_fill_style;
+
 typedef struct vg_frame_desc {
     uint32_t width;
     uint32_t height;
@@ -150,6 +156,9 @@ vg_result vg_path_close(vg_path* path);
 
 vg_result vg_draw_path_stroke(vg_context* ctx, const vg_path* path, const vg_stroke_style* style);
 vg_result vg_draw_polyline(vg_context* ctx, const vg_vec2* points, size_t count, const vg_stroke_style* style, int closed);
+vg_result vg_fill_convex(vg_context* ctx, const vg_vec2* points, size_t count, const vg_fill_style* style);
+vg_result vg_fill_rect(vg_context* ctx, vg_rect rect, const vg_fill_style* style);
+vg_result vg_fill_circle(vg_context* ctx, vg_vec2 center, float radius_px, const vg_fill_style* style, int segments);
 
 float vg_measure_text(const char* text, float size_px, float letter_spacing_px);
 vg_result vg_draw_text(

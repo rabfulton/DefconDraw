@@ -51,6 +51,19 @@ static int vg_style_is_valid(const vg_stroke_style* style) {
     return 1;
 }
 
+static int vg_fill_style_is_valid(const vg_fill_style* style) {
+    if (!style) {
+        return 0;
+    }
+    if (!isfinite(style->intensity) || style->intensity < 0.0f) {
+        return 0;
+    }
+    if (style->blend < VG_BLEND_ALPHA || style->blend > VG_BLEND_ADDITIVE) {
+        return 0;
+    }
+    return 1;
+}
+
 static vg_crt_profile vg_crt_profile_for_preset(vg_crt_preset preset) {
     vg_crt_profile p = {0};
     switch (preset) {
@@ -507,6 +520,50 @@ vg_result vg_draw_polyline(vg_context* ctx, const vg_vec2* points, size_t count,
     }
 
     return ctx->backend.ops->draw_polyline(ctx, points, count, style, closed);
+}
+
+vg_result vg_fill_convex(vg_context* ctx, const vg_vec2* points, size_t count, const vg_fill_style* style) {
+    if (!ctx || !points || count < 3u || !style) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!ctx->in_frame || !vg_fill_style_is_valid(style)) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!ctx->backend.ops || !ctx->backend.ops->fill_convex) {
+        return VG_ERROR_UNSUPPORTED;
+    }
+    return ctx->backend.ops->fill_convex(ctx, points, count, style);
+}
+
+vg_result vg_fill_rect(vg_context* ctx, vg_rect rect, const vg_fill_style* style) {
+    if (rect.w <= 0.0f || rect.h <= 0.0f) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    vg_vec2 p[4] = {
+        {rect.x, rect.y},
+        {rect.x + rect.w, rect.y},
+        {rect.x + rect.w, rect.y + rect.h},
+        {rect.x, rect.y + rect.h}
+    };
+    return vg_fill_convex(ctx, p, 4u, style);
+}
+
+vg_result vg_fill_circle(vg_context* ctx, vg_vec2 center, float radius_px, const vg_fill_style* style, int segments) {
+    if (!isfinite(radius_px) || radius_px <= 0.0f || segments < 8 || segments > 512) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    vg_vec2* pts = (vg_vec2*)malloc(sizeof(*pts) * (size_t)segments);
+    if (!pts) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+    for (int i = 0; i < segments; ++i) {
+        float a = ((float)i / (float)segments) * 2.0f * 3.14159265358979323846f;
+        pts[i].x = center.x + cosf(a) * radius_px;
+        pts[i].y = center.y + sinf(a) * radius_px;
+    }
+    vg_result r = vg_fill_convex(ctx, pts, (size_t)segments, style);
+    free(pts);
+    return r;
 }
 
 float vg_measure_text(const char* text, float size_px, float letter_spacing_px) {

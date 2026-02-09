@@ -218,6 +218,34 @@ Requirements:
 - `path` belongs to `ctx`
 - valid `style`
 
+### `vg_fill_style`
+
+Fill style for solid geometry:
+- `intensity`
+- `color`
+- `blend`
+
+### `vg_fill_convex(vg_context* ctx, const vg_vec2* points, size_t count, const vg_fill_style* style)`
+
+Fills a convex polygon (triangle fan triangulation).
+
+Requirements:
+- active frame
+- `points != NULL`, `count >= 3`
+- valid `style`
+
+### `vg_fill_rect(vg_context* ctx, vg_rect rect, const vg_fill_style* style)`
+
+Fills an axis-aligned rectangle.
+
+### `vg_fill_circle(vg_context* ctx, vg_vec2 center, float radius_px, const vg_fill_style* style, int segments)`
+
+Fills a circle via convex polygon approximation.
+
+Requirements:
+- `radius_px > 0`
+- `segments` in `[8, 512]`
+
 ### `vg_measure_text(const char* text, float size_px, float letter_spacing_px)`
 
 Returns text width in pixels for the built-in stroke font.

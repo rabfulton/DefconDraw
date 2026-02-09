@@ -517,6 +517,24 @@ static int vg_vk_emit_round_cap(vg_vk_backend* backend, vg_vec2 center, vg_vec2 
     return 1;
 }
 
+static vg_result vg_vk_push_draw(vg_vk_backend* backend, uint32_t first_vertex, uint32_t vertex_count, const vg_stroke_style* style) {
+    if (!vg_vk_reserve_draws(backend, 1u)) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+    if (backend->draw_count > 0u) {
+        vg_vk_draw_cmd* prev = &backend->draws[backend->draw_count - 1u];
+        if (prev->first_vertex + prev->vertex_count == first_vertex && vg_vk_style_equal(&prev->style, style)) {
+            prev->vertex_count += vertex_count;
+            return VG_OK;
+        }
+    }
+    backend->draws[backend->draw_count].first_vertex = first_vertex;
+    backend->draws[backend->draw_count].vertex_count = vertex_count;
+    backend->draws[backend->draw_count].style = *style;
+    backend->draw_count++;
+    return VG_OK;
+}
+
 static vg_result vg_vk_draw_polyline_impl(
     vg_vk_backend* backend,
     const vg_vec2* points,
@@ -564,23 +582,7 @@ static vg_result vg_vk_draw_polyline_impl(
         }
     }
 
-    if (!vg_vk_reserve_draws(backend, 1u)) {
-        return VG_ERROR_OUT_OF_MEMORY;
-    }
-    uint32_t new_count = backend->stroke_vertex_count - first_vertex;
-    if (backend->draw_count > 0u) {
-        vg_vk_draw_cmd* prev = &backend->draws[backend->draw_count - 1u];
-        if (prev->first_vertex + prev->vertex_count == first_vertex && vg_vk_style_equal(&prev->style, style)) {
-            prev->vertex_count += new_count;
-            return VG_OK;
-        }
-    }
-    backend->draws[backend->draw_count].first_vertex = first_vertex;
-    backend->draws[backend->draw_count].vertex_count = new_count;
-    backend->draws[backend->draw_count].style = *style;
-    backend->draw_count++;
-
-    return VG_OK;
+    return vg_vk_push_draw(backend, first_vertex, backend->stroke_vertex_count - first_vertex, style);
 }
 
 static int vg_vk_append_point(vg_vec2** points, size_t* count, size_t* cap, vg_vec2 p) {
@@ -1157,6 +1159,29 @@ static vg_result vg_vk_draw_polyline(vg_context* ctx, const vg_vec2* points, siz
     return vg_vk_draw_polyline_impl(backend, points, count, style, closed);
 }
 
+static vg_result vg_vk_fill_convex(vg_context* ctx, const vg_vec2* points, size_t count, const vg_fill_style* style) {
+    vg_vk_backend* backend = vg_vk_backend_from(ctx);
+    if (!backend || !points || !style || count < 3u) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    uint32_t first_vertex = backend->stroke_vertex_count;
+    for (size_t i = 1; i + 1 < count; ++i) {
+        if (!vg_vk_emit_triangle(backend, points[0], points[i], points[i + 1u])) {
+            return VG_ERROR_OUT_OF_MEMORY;
+        }
+    }
+    vg_stroke_style draw_style = {
+        .width_px = 1.0f,
+        .intensity = style->intensity,
+        .color = style->color,
+        .cap = VG_LINE_CAP_BUTT,
+        .join = VG_LINE_JOIN_BEVEL,
+        .miter_limit = 1.0f,
+        .blend = style->blend
+    };
+    return vg_vk_push_draw(backend, first_vertex, backend->stroke_vertex_count - first_vertex, &draw_style);
+}
+
 vg_result vg_vk_backend_create(vg_context* ctx) {
     static const vg_backend_ops k_ops = {
         .destroy = vg_vk_destroy,
@@ -1166,6 +1191,7 @@ vg_result vg_vk_backend_create(vg_context* ctx) {
         .set_crt_profile = vg_vk_set_crt_profile,
         .draw_path_stroke = vg_vk_draw_path_stroke,
         .draw_polyline = vg_vk_draw_polyline,
+        .fill_convex = vg_vk_fill_convex,
         .debug_rasterize_rgba8 = vg_vk_debug_rasterize_rgba8
     };
 

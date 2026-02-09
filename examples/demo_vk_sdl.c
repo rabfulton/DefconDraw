@@ -25,15 +25,17 @@
 #define APP_MAX_SWAPCHAIN_IMAGES 8
 
 typedef struct post_pc {
-    float texel[2];
-    float bloom_strength;
-    float bloom_radius_px;
-    float vignette_strength;
-    float barrel_distortion;
-    float scanline_strength;
-    float noise_strength;
-    float time_s;
+    float p0[4]; /* texel.x, texel.y, bloom_strength, bloom_radius */
+    float p1[4]; /* vignette, barrel, scanline, noise */
+    float p2[4]; /* time_s, ui_enable, ui_x, ui_y */
+    float p3[4]; /* ui_w, ui_h, pad0, pad1 */
 } post_pc;
+
+typedef struct star3 {
+    float x;
+    float y;
+    float z;
+} star3;
 
 typedef enum frame_result {
     FRAME_OK = 0,
@@ -103,6 +105,18 @@ typedef struct app {
     int prev_nav_dir;
     float adjust_repeat_timer;
     float nav_repeat_timer;
+
+    int scene_mode;
+    star3 stars[320];
+    int stars_initialized;
+
+    const char* tty_text;
+    size_t tty_visible;
+    float tty_timer;
+    float tty_char_dt;
+
+    SDL_AudioDeviceID audio_dev;
+    int audio_ready;
 } app;
 
 enum {
@@ -120,6 +134,24 @@ enum {
     UI_PARAM_NOISE = 11,
     UI_PARAM_LINE_WIDTH = 12,
     UI_PARAM_COUNT = 13
+};
+
+static const float k_ui_x = 24.0f;
+static const float k_ui_y = 24.0f;
+static const float k_ui_w = 560.0f;
+static const float k_ui_row_step = 40.0f;
+static const float k_ui_rows_top = 70.0f;
+static const float k_ui_footer_h = 56.0f;
+static const float k_ui_h = 70.0f + (float)UI_PARAM_COUNT * 40.0f + 56.0f;
+
+enum {
+    SCENE_CLASSIC = 0,
+    SCENE_WIREFRAME_CUBE = 1,
+    SCENE_STARFIELD = 2,
+    SCENE_SURFACE_PLOT = 3,
+    SCENE_SYNTHWAVE = 4,
+    SCENE_FILL_PRIMS = 5,
+    SCENE_COUNT = 6
 };
 
 static int check_vk(VkResult res, const char* what) {
@@ -160,6 +192,110 @@ static float norm_range(float v, float lo, float hi) {
         return 0.0f;
     }
     return clampf((v - lo) / (hi - lo), 0.0f, 1.0f);
+}
+
+static vg_vec2 project_3d(float x, float y, float z, float w, float h, float fov_px, float cam_z) {
+    float zz = z + cam_z;
+    if (zz < 0.10f) {
+        zz = 0.10f;
+    }
+    float s = fov_px / zz;
+    vg_vec2 p = {w * 0.5f + x * s, h * 0.55f - y * s};
+    return p;
+}
+
+static void queue_teletype_beep(app* a, float freq_hz, float dur_s, float amp) {
+    if (!a->audio_ready) {
+        return;
+    }
+    const int sample_rate = 48000;
+    int n = (int)(dur_s * (float)sample_rate);
+    if (n < 64) {
+        n = 64;
+    }
+    if (n > 4096) {
+        n = 4096;
+    }
+    float* samples = (float*)malloc((size_t)n * sizeof(float));
+    if (!samples) {
+        return;
+    }
+    float phase = 0.0f;
+    float step = 2.0f * 3.14159265358979323846f * freq_hz / (float)sample_rate;
+    for (int i = 0; i < n; ++i) {
+        float t = (float)i / (float)(n - 1);
+        float env = (1.0f - t) * (1.0f - t);
+        samples[i] = sinf(phase) * amp * env;
+        phase += step;
+    }
+    SDL_QueueAudio(a->audio_dev, samples, (uint32_t)((size_t)n * sizeof(float)));
+    free(samples);
+}
+
+static void reset_teletype(app* a) {
+    a->tty_visible = 0u;
+    a->tty_timer = 0.02f;
+}
+
+static void set_scene(app* a, int mode) {
+    static const char* k_scene_text[SCENE_COUNT] = {
+        "STATUS READY\nMODE 1 CLASSIC VECTOR\nWAVE + TRIANGLE TEST PATTERN",
+        "STATUS READY\nMODE 2 WIREFRAME CUBE\nROTATION + PERSPECTIVE TEST",
+        "STATUS READY\nMODE 3 STARFIELD\nDEPTH MOTION + STREAK TEST",
+        "STATUS READY\nMODE 4 SURFACE PLOT\n3D FUNCTION GRID TEST",
+        "STATUS READY\nMODE 5 SYNTH TERRAIN\nHORIZON + PARALLAX TEST",
+        "STATUS READY\nMODE 6 FILL PRIMITIVES\nCONVEX + RECT + CIRCLE TEST"
+    };
+    if (mode < 0 || mode >= SCENE_COUNT) {
+        return;
+    }
+    a->scene_mode = mode;
+    a->tty_text = k_scene_text[mode];
+    reset_teletype(a);
+}
+
+static void init_teletype_audio(app* a) {
+    SDL_AudioSpec want;
+    SDL_zero(want);
+    want.freq = 48000;
+    want.format = AUDIO_F32SYS;
+    want.channels = 1;
+    want.samples = 512;
+    want.callback = NULL;
+    a->audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
+    if (a->audio_dev != 0) {
+        SDL_PauseAudioDevice(a->audio_dev, 0);
+        a->audio_ready = 1;
+    } else {
+        a->audio_ready = 0;
+    }
+}
+
+static void init_starfield(app* a) {
+    for (size_t i = 0; i < sizeof(a->stars) / sizeof(a->stars[0]); ++i) {
+        a->stars[i].x = rand_signed((uint32_t)(i * 31u + 7u)) * 2.2f;
+        a->stars[i].y = rand_signed((uint32_t)(i * 71u + 13u)) * 1.2f;
+        a->stars[i].z = 0.2f + (float)i / (float)(sizeof(a->stars) / sizeof(a->stars[0])) * 1.8f;
+    }
+    a->stars_initialized = 1;
+}
+
+static void update_teletype(app* a, float dt) {
+    if (!a->tty_text) {
+        return;
+    }
+    size_t n = strlen(a->tty_text);
+    if (a->tty_visible >= n) {
+        return;
+    }
+    a->tty_timer -= dt;
+    while (a->tty_timer <= 0.0f && a->tty_visible < n) {
+        char c = a->tty_text[a->tty_visible++];
+        a->tty_timer += a->tty_char_dt;
+        if (c > ' ' && c != '\n') {
+            queue_teletype_beep(a, 900.0f + (float)((unsigned char)c % 7u) * 55.0f, 0.028f, 0.17f);
+        }
+    }
 }
 
 static uint32_t find_memory_type(app* a, uint32_t type_bits, VkMemoryPropertyFlags required) {
@@ -1370,14 +1506,6 @@ static void handle_ui_hold(app* a, float dt) {
 }
 
 static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
-    const float ui_x = 24.0f;
-    const float ui_y = 24.0f;
-    const float ui_w = 560.0f;
-    const float row_step = 40.0f;
-    const float rows_top = 70.0f;
-    const float footer_h = 56.0f;
-    const float ui_h = rows_top + (float)UI_PARAM_COUNT * row_step + footer_h;
-
     vg_stroke_style panel = {
         .width_px = 2.0f,
         .intensity = 0.65f,
@@ -1394,7 +1522,7 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
     text.join = VG_LINE_JOIN_ROUND;
     text.blend = VG_BLEND_ALPHA;
 
-    vg_rect ui_rect = {ui_x, ui_y, ui_w, ui_h};
+    vg_rect ui_rect = {k_ui_x, k_ui_y, k_ui_w, k_ui_h};
     vg_result r = vg_draw_rect(a->vg, ui_rect, &panel);
     if (r != VG_OK) {
         return r;
@@ -1404,8 +1532,20 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
     r = vg_draw_text(
         a->vg,
         "TAB UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
-        (vg_vec2){ui_x + 16.0f, ui_y + 14.0f},
+        (vg_vec2){k_ui_x + 16.0f, k_ui_y + 14.0f},
         11.0f,
+        0.8f,
+        &text,
+        NULL
+    );
+    if (r != VG_OK) {
+        return r;
+    }
+    r = vg_draw_text(
+        a->vg,
+        "1..6 SCENE  R REPLAY TTY",
+        (vg_vec2){k_ui_x + 16.0f, k_ui_y + 31.0f},
+        10.0f,
         0.8f,
         &text,
         NULL
@@ -1461,28 +1601,308 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
     };
 
     for (int i = 0; i < UI_PARAM_COUNT; ++i) {
-        float row_y = ui_y + rows_top + (float)i * row_step;
-        vg_rect button = {ui_x + 16.0f, row_y, 222.0f, 30.0f};
+        float row_y = k_ui_y + k_ui_rows_top + (float)i * k_ui_row_step;
+        vg_rect button = {k_ui_x + 16.0f, row_y, 222.0f, 30.0f};
         r = vg_draw_button(a->vg, button, labels[i], 13.0f, &panel, &text, i == a->selected_param);
         if (r != VG_OK) {
             return r;
         }
 
-        vg_rect slider = {ui_x + 254.0f, row_y + 2.0f, 230.0f, 26.0f};
+        vg_rect slider = {k_ui_x + 254.0f, row_y + 2.0f, 230.0f, 26.0f};
         r = vg_draw_slider(a->vg, slider, values_norm[i], &panel, &text, &text);
         if (r != VG_OK) {
             return r;
         }
 
         snprintf(line, sizeof(line), "%.3f", values[i]);
-        r = vg_draw_text(a->vg, line, (vg_vec2){ui_x + 492.0f, row_y + 8.0f}, 11.5f, 0.8f, &text, NULL);
+        r = vg_draw_text(a->vg, line, (vg_vec2){k_ui_x + 492.0f, row_y + 8.0f}, 11.5f, 0.8f, &text, NULL);
         if (r != VG_OK) {
             return r;
         }
     }
 
     snprintf(line, sizeof(line), "FPS %.1f", fps);
-    return vg_draw_text(a->vg, line, (vg_vec2){ui_x + 16.0f, ui_y + ui_h - 26.0f}, 18.0f, 1.0f, &text, NULL);
+    return vg_draw_text(a->vg, line, (vg_vec2){k_ui_x + 16.0f, k_ui_y + k_ui_h - 26.0f}, 18.0f, 1.0f, &text, NULL);
+}
+
+static vg_result draw_scene_classic(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float cx, float cy, float jx, float jy) {
+    vg_result vr;
+    vg_vec2 tri[4] = {
+        {cx + cosf(t) * 120.0f + jx, cy - 140.0f + jy},
+        {cx + 140.0f + jx, cy + 100.0f + jy},
+        {cx - 140.0f + jx, cy + 100.0f + jy},
+        {cx + cosf(t) * 120.0f + jx, cy - 140.0f + jy}
+    };
+
+    vr = vg_draw_polyline(a->vg, tri, 4, halo_s, 0);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_polyline(a->vg, tri, 4, main_s, 0);
+    if (vr != VG_OK) return vr;
+
+    vg_path_clear(a->wave_path);
+    vg_path_move_to(a->wave_path, (vg_vec2){120.0f + jx, cy + 220.0f + jy});
+    vg_path_cubic_to(a->wave_path, (vg_vec2){280.0f + jx, cy + 80.0f + sinf(t) * 50.0f + jy}, (vg_vec2){420.0f + jx, cy + 360.0f + jy}, (vg_vec2){580.0f + jx, cy + 220.0f + jy});
+    vg_path_cubic_to(a->wave_path, (vg_vec2){760.0f + jx, cy + 70.0f + jy}, (vg_vec2){920.0f + jx, cy + 370.0f + cosf(t * 1.2f) * 60.0f + jy}, (vg_vec2){1120.0f + jx, cy + 220.0f + jy});
+    vr = vg_draw_path_stroke(a->vg, a->wave_path, halo_s);
+    if (vr != VG_OK) return vr;
+    return vg_draw_path_stroke(a->vg, a->wave_path, main_s);
+}
+
+static vg_result draw_scene_wire_cube(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h, float jx, float jy) {
+    float rx = t * 0.7f;
+    float ry = t * 1.1f;
+    float crx = cosf(rx), srx = sinf(rx);
+    float cry = cosf(ry), sry = sinf(ry);
+    float s = 1.1f;
+
+    float v[8][3] = {
+        {-s, -s, -s}, {s, -s, -s}, {s, s, -s}, {-s, s, -s},
+        {-s, -s, s},  {s, -s, s},  {s, s, s},  {-s, s, s}
+    };
+    vg_vec2 p[8];
+    for (int i = 0; i < 8; ++i) {
+        float x = v[i][0], y = v[i][1], z = v[i][2];
+        float xz = x * cry - z * sry;
+        float zz = x * sry + z * cry;
+        float yz = y * crx - zz * srx;
+        float zz2 = y * srx + zz * crx;
+        p[i] = project_3d(xz, yz, zz2, w, h, h * 0.95f, 3.8f);
+        p[i].x += jx;
+        p[i].y += jy;
+    }
+    static const int edges[12][2] = {
+        {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
+    };
+    for (int i = 0; i < 12; ++i) {
+        vg_vec2 seg[2] = {p[edges[i][0]], p[edges[i][1]]};
+        vg_result vr = vg_draw_polyline(a->vg, seg, 2, halo_s, 0);
+        if (vr != VG_OK) return vr;
+        vr = vg_draw_polyline(a->vg, seg, 2, main_s, 0);
+        if (vr != VG_OK) return vr;
+    }
+    return VG_OK;
+}
+
+static vg_result draw_scene_starfield(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float dt, float w, float h) {
+    if (!a->stars_initialized) {
+        init_starfield(a);
+    }
+    vg_fill_style star_fill = {
+        .intensity = 1.1f,
+        .color = {0.30f, 1.0f, 0.45f, 0.85f},
+        .blend = VG_BLEND_ADDITIVE
+    };
+    float speed = 1.45f;
+    for (size_t i = 0; i < sizeof(a->stars) / sizeof(a->stars[0]); ++i) {
+        star3* s = &a->stars[i];
+        float z_prev = s->z;
+        s->z -= dt * speed;
+        if (s->z <= 0.08f) {
+            s->x = rand_signed((uint32_t)(i * 211u + SDL_GetTicks())) * 2.5f;
+            s->y = rand_signed((uint32_t)(i * 97u + SDL_GetTicks() * 3u)) * 1.4f;
+            s->z = 2.0f;
+            z_prev = s->z;
+        }
+        vg_vec2 p0 = project_3d(s->x, s->y, z_prev, w, h, h * 0.75f, 0.3f);
+        vg_vec2 p1 = project_3d(s->x, s->y, s->z, w, h, h * 0.75f, 0.3f);
+        vg_vec2 seg[2] = {p0, p1};
+        vg_result vr = vg_draw_polyline(a->vg, seg, 2, halo_s, 0);
+        if (vr != VG_OK) return vr;
+        vr = vg_draw_polyline(a->vg, seg, 2, main_s, 0);
+        if (vr != VG_OK) return vr;
+        if (s->z < 0.35f) {
+            vr = vg_fill_circle(a->vg, p1, 1.8f + (0.35f - s->z) * 4.0f, &star_fill, 14);
+            if (vr != VG_OK) return vr;
+        }
+    }
+    return VG_OK;
+}
+
+static vg_result draw_scene_surface(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h) {
+    const int n = 16;
+    const float pitch = 0.62f;
+    const float cp = cosf(pitch);
+    const float sp = sinf(pitch);
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int li = -n; li <= n; ++li) {
+            vg_vec2 line[2 * n + 1];
+            for (int si = -n; si <= n; ++si) {
+                float x = pass == 0 ? (float)si * 0.24f : (float)li * 0.24f;
+                float z = pass == 0 ? (float)li * 0.24f : (float)si * 0.24f;
+                float y = 0.42f * sinf(2.1f * x + t * 0.85f) * cosf(1.7f * z + t * 0.62f);
+                float yr = y * cp - z * sp;
+                float zr = y * sp + z * cp + 2.8f;
+                line[si + n] = project_3d(x, yr, zr, w, h, h * 0.92f, 2.9f);
+            }
+            vg_result vr = vg_draw_polyline(a->vg, line, 2u * n + 1u, halo_s, 0);
+            if (vr != VG_OK) return vr;
+            vr = vg_draw_polyline(a->vg, line, 2u * n + 1u, main_s, 0);
+            if (vr != VG_OK) return vr;
+        }
+    }
+    return VG_OK;
+}
+
+static vg_result draw_scene_synthwave(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h) {
+    float cx = w * 0.5f;
+    float bottom_y = h * 0.10f;
+    float horizon_y = h * 0.46f;
+
+    for (int i = 0; i < 22; ++i) {
+        float u = (float)i / 21.0f;
+        float y = horizon_y - u * u * (horizon_y - bottom_y);
+        float hw = 32.0f + (w * 0.52f - 32.0f) * u;
+        vg_vec2 seg[2] = {{cx - hw, y}, {cx + hw, y}};
+        vg_result vr = vg_draw_polyline(a->vg, seg, 2, halo_s, 0);
+        if (vr != VG_OK) return vr;
+        vr = vg_draw_polyline(a->vg, seg, 2, main_s, 0);
+        if (vr != VG_OK) return vr;
+    }
+
+    for (int i = -14; i <= 14; ++i) {
+        float u = (float)i / 14.0f;
+        vg_vec2 seg[2] = {
+            {cx + u * w * 0.50f, bottom_y},
+            {cx + u * 24.0f, horizon_y}
+        };
+        vg_result vr = vg_draw_polyline(a->vg, seg, 2, halo_s, 0);
+        if (vr != VG_OK) return vr;
+        vr = vg_draw_polyline(a->vg, seg, 2, main_s, 0);
+        if (vr != VG_OK) return vr;
+    }
+
+    vg_path_clear(a->wave_path);
+    for (int i = 0; i <= 96; ++i) {
+        float u = (float)i / 96.0f;
+        float x = u * w;
+        float y = horizon_y + 48.0f + 32.0f * sinf(u * 11.0f + t * 0.55f) + 15.0f * sinf(u * 24.0f + t * 0.20f);
+        if (i == 0) vg_path_move_to(a->wave_path, (vg_vec2){x, y});
+        else vg_path_line_to(a->wave_path, (vg_vec2){x, y});
+    }
+    vg_result vr = vg_draw_path_stroke(a->vg, a->wave_path, halo_s);
+    if (vr != VG_OK) return vr;
+    return vg_draw_path_stroke(a->vg, a->wave_path, main_s);
+}
+
+static vg_result draw_scene_fill_prims(app* a, float t, float w, float h) {
+    vg_fill_style bg_fill = {.intensity = 0.55f, .color = {0.06f, 0.24f, 0.10f, 0.25f}, .blend = VG_BLEND_ALPHA};
+    vg_fill_style hot_fill = {.intensity = 1.0f, .color = {0.18f, 1.0f, 0.42f, 0.42f}, .blend = VG_BLEND_ADDITIVE};
+    vg_fill_style cool_fill = {.intensity = 0.9f, .color = {0.22f, 0.82f, 1.0f, 0.35f}, .blend = VG_BLEND_ALPHA};
+    vg_stroke_style edge = {
+        .width_px = 2.2f,
+        .intensity = 1.1f,
+        .color = {0.24f, 1.0f, 0.52f, 0.95f},
+        .cap = VG_LINE_CAP_ROUND,
+        .join = VG_LINE_JOIN_ROUND,
+        .miter_limit = 2.0f,
+        .blend = VG_BLEND_ADDITIVE
+    };
+
+    vg_result vr = vg_fill_rect(a->vg, (vg_rect){w * 0.08f, h * 0.16f, w * 0.36f, h * 0.22f}, &bg_fill);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_rect(a->vg, (vg_rect){w * 0.08f, h * 0.16f, w * 0.36f, h * 0.22f}, &edge);
+    if (vr != VG_OK) return vr;
+
+    for (int i = 0; i < 3; ++i) {
+        float a0 = t * (0.5f + 0.2f * (float)i) + (float)i;
+        vg_vec2 c = {w * (0.63f + 0.09f * cosf(a0)), h * (0.34f + 0.10f * sinf(a0 * 1.3f))};
+        float r = 52.0f + 16.0f * sinf(a0 * 1.7f);
+        vr = vg_fill_circle(a->vg, c, r, i == 1 ? &cool_fill : &hot_fill, 32);
+        if (vr != VG_OK) return vr;
+        vr = vg_draw_polyline(a->vg, (vg_vec2[]){ {c.x - r, c.y}, {c.x + r, c.y} }, 2, &edge, 0);
+        if (vr != VG_OK) return vr;
+    }
+
+    for (int p = 0; p < 2; ++p) {
+        vg_vec2 poly[6];
+        float base = t * 0.45f + (float)p * 1.6f;
+        vg_vec2 center = {w * (0.26f + 0.28f * (float)p), h * 0.66f};
+        for (int i = 0; i < 6; ++i) {
+            float ang = base + (float)i / 6.0f * 6.28318530718f;
+            float rr = 52.0f + (i % 2 ? 20.0f : -10.0f);
+            poly[i].x = center.x + cosf(ang) * rr;
+            poly[i].y = center.y + sinf(ang) * rr;
+        }
+        vr = vg_fill_convex(a->vg, poly, 6, p == 0 ? &hot_fill : &cool_fill);
+        if (vr != VG_OK) return vr;
+        vr = vg_draw_polyline(a->vg, poly, 6, &edge, 1);
+        if (vr != VG_OK) return vr;
+    }
+
+    return VG_OK;
+}
+
+static vg_result draw_scene_mode(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float dt, float w, float h, float cx, float cy, float jx, float jy) {
+    switch (a->scene_mode) {
+        case SCENE_WIREFRAME_CUBE:
+            return draw_scene_wire_cube(a, halo_s, main_s, t, w, h, jx, jy);
+        case SCENE_STARFIELD:
+            return draw_scene_starfield(a, halo_s, main_s, dt, w, h);
+        case SCENE_SURFACE_PLOT:
+            return draw_scene_surface(a, halo_s, main_s, t, w, h);
+        case SCENE_SYNTHWAVE:
+            return draw_scene_synthwave(a, halo_s, main_s, t, w, h);
+        case SCENE_FILL_PRIMS:
+            return draw_scene_fill_prims(a, t, w, h);
+        case SCENE_CLASSIC:
+        default:
+            return draw_scene_classic(a, halo_s, main_s, t, cx, cy, jx, jy);
+    }
+}
+
+static vg_result draw_teletype_overlay(app* a, float w, float h) {
+    (void)w;
+    vg_stroke_style tty = {
+        .width_px = 1.2f,
+        .intensity = 0.95f,
+        .color = {0.35f, 1.0f, 0.52f, 0.95f},
+        .cap = VG_LINE_CAP_ROUND,
+        .join = VG_LINE_JOIN_ROUND,
+        .miter_limit = 2.0f,
+        .blend = VG_BLEND_ALPHA
+    };
+    if (!a->tty_text) {
+        return VG_OK;
+    }
+    size_t n = a->tty_visible;
+    size_t src_len = strlen(a->tty_text);
+    if (n > src_len) {
+        n = src_len;
+    }
+    char buf[640];
+    if (n >= sizeof(buf)) {
+        n = sizeof(buf) - 1u;
+    }
+    memcpy(buf, a->tty_text, n);
+    buf[n] = '\0';
+
+    float x0 = 40.0f;
+    float y0 = h - 44.0f;
+    float lh = 18.0f;
+    char line[256];
+    size_t li = 0;
+    int row = 0;
+
+    for (size_t i = 0;; ++i) {
+        char c = buf[i];
+        if (c == '\n' || c == '\0') {
+            line[li] = '\0';
+            vg_result r = vg_draw_text(a->vg, line, (vg_vec2){x0, y0 - lh * (float)row}, 13.0f, 0.8f, &tty, NULL);
+            if (r != VG_OK) {
+                return r;
+            }
+            row++;
+            li = 0;
+            if (c == '\0') {
+                break;
+            }
+            continue;
+        }
+        if (li + 1u < sizeof(line)) {
+            line[li++] = c;
+        }
+    }
+    return VG_OK;
 }
 
 static frame_result record_and_submit(app* a, uint32_t image_index, float t, float dt, float fps) {
@@ -1542,22 +1962,14 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     float jx = crt.jitter_amount * 2.0f * rand_signed((uint32_t)(t * 1300.0f));
     float jy = crt.jitter_amount * 2.0f * rand_signed((uint32_t)(t * 1700.0f));
 
-    vg_stroke_style fade = {
-        .width_px = (float)a->swapchain_extent.height * 2.5f,
+    vg_fill_style fade_fill = {
         .intensity = 1.0f,
         .color = {0.0f, 0.0f, 0.0f, fade_alpha},
-        .cap = VG_LINE_CAP_BUTT,
-        .join = VG_LINE_JOIN_BEVEL,
-        .miter_limit = 1.0f,
         .blend = VG_BLEND_ALPHA
     };
-    vg_vec2 fade_line[2] = {
-        {-(float)a->swapchain_extent.width + jx, (float)a->swapchain_extent.height * 0.5f + jy},
-        {(float)a->swapchain_extent.width * 2.0f + jx, (float)a->swapchain_extent.height * 0.5f + jy}
-    };
-    vr = vg_draw_polyline(a->vg, fade_line, 2, &fade, 0);
+    vr = vg_fill_rect(a->vg, (vg_rect){0.0f, 0.0f, (float)a->swapchain_extent.width, (float)a->swapchain_extent.height}, &fade_fill);
     if (vr != VG_OK) {
-        fprintf(stderr, "vg_draw_polyline(fade) failed: %s\n", vg_result_string(vr));
+        fprintf(stderr, "vg_fill_rect(fade) failed: %s\n", vg_result_string(vr));
         return FRAME_FAIL;
     }
 
@@ -1583,35 +1995,28 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
         .blend = VG_BLEND_ADDITIVE
     };
 
-    vg_vec2 tri[4] = {
-        {cx + cosf(t) * 120.0f + jx, cy - 140.0f + jy},
-        {cx + 140.0f + jx, cy + 100.0f + jy},
-        {cx - 140.0f + jx, cy + 100.0f + jy},
-        {cx + cosf(t) * 120.0f + jx, cy - 140.0f + jy}
-    };
-    vr = vg_draw_polyline(a->vg, tri, 4, &halo_s, 0);
+    vr = draw_scene_mode(
+        a,
+        &halo_s,
+        &main_s,
+        t,
+        dt,
+        (float)a->swapchain_extent.width,
+        (float)a->swapchain_extent.height,
+        cx,
+        cy,
+        jx,
+        jy
+    );
     if (vr != VG_OK) {
-        fprintf(stderr, "vg_draw_polyline(tri halo) failed: %s\n", vg_result_string(vr));
-        return FRAME_FAIL;
-    }
-    vr = vg_draw_polyline(a->vg, tri, 4, &main_s, 0);
-    if (vr != VG_OK) {
-        fprintf(stderr, "vg_draw_polyline(tri) failed: %s\n", vg_result_string(vr));
+        fprintf(stderr, "draw_scene_mode failed: %s\n", vg_result_string(vr));
         return FRAME_FAIL;
     }
 
-    vg_path_clear(a->wave_path);
-    vg_path_move_to(a->wave_path, (vg_vec2){120.0f + jx, cy + 220.0f + jy});
-    vg_path_cubic_to(a->wave_path, (vg_vec2){280.0f + jx, cy + 80.0f + sinf(t) * 50.0f + jy}, (vg_vec2){420.0f + jx, cy + 360.0f + jy}, (vg_vec2){580.0f + jx, cy + 220.0f + jy});
-    vg_path_cubic_to(a->wave_path, (vg_vec2){760.0f + jx, cy + 70.0f + jy}, (vg_vec2){920.0f + jx, cy + 370.0f + cosf(t * 1.2f) * 60.0f + jy}, (vg_vec2){1120.0f + jx, cy + 220.0f + jy});
-    vr = vg_draw_path_stroke(a->vg, a->wave_path, &halo_s);
+    update_teletype(a, dt);
+    vr = draw_teletype_overlay(a, (float)a->swapchain_extent.width, (float)a->swapchain_extent.height);
     if (vr != VG_OK) {
-        fprintf(stderr, "vg_draw_path_stroke(wave halo) failed: %s\n", vg_result_string(vr));
-        return FRAME_FAIL;
-    }
-    vr = vg_draw_path_stroke(a->vg, a->wave_path, &main_s);
-    if (vr != VG_OK) {
-        fprintf(stderr, "vg_draw_path_stroke(wave) failed: %s\n", vg_result_string(vr));
+        fprintf(stderr, "draw_teletype_overlay failed: %s\n", vg_result_string(vr));
         return FRAME_FAIL;
     }
 
@@ -1646,15 +2051,20 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, a->post_layout, 0, 1, &a->post_desc_set, 0, NULL);
 
     post_pc pc = {0};
-    pc.texel[0] = 1.0f / (float)a->swapchain_extent.width;
-    pc.texel[1] = 1.0f / (float)a->swapchain_extent.height;
-    pc.bloom_strength = crt.bloom_strength;
-    pc.bloom_radius_px = crt.bloom_radius_px;
-    pc.vignette_strength = crt.vignette_strength;
-    pc.barrel_distortion = crt.barrel_distortion;
-    pc.scanline_strength = crt.scanline_strength;
-    pc.noise_strength = crt.noise_strength;
-    pc.time_s = t;
+    pc.p0[0] = 1.0f / (float)a->swapchain_extent.width;
+    pc.p0[1] = 1.0f / (float)a->swapchain_extent.height;
+    pc.p0[2] = crt.bloom_strength;
+    pc.p0[3] = crt.bloom_radius_px;
+    pc.p1[0] = crt.vignette_strength;
+    pc.p1[1] = crt.barrel_distortion;
+    pc.p1[2] = crt.scanline_strength;
+    pc.p1[3] = crt.noise_strength;
+    pc.p2[0] = t;
+    pc.p2[1] = a->show_ui ? 1.0f : 0.0f;
+    pc.p2[2] = k_ui_x / (float)a->swapchain_extent.width;
+    pc.p2[3] = k_ui_y / (float)a->swapchain_extent.height;
+    pc.p3[0] = k_ui_w / (float)a->swapchain_extent.width;
+    pc.p3[1] = k_ui_h / (float)a->swapchain_extent.height;
     vkCmdPushConstants(cmd, a->post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
@@ -1719,6 +2129,11 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
 }
 
 static void cleanup(app* a) {
+    if (a->audio_dev != 0) {
+        SDL_CloseAudioDevice(a->audio_dev);
+        a->audio_dev = 0;
+    }
+
     if (a->device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(a->device);
         destroy_swapchain_resources(a);
@@ -1756,11 +2171,14 @@ int main(void) {
     a.show_ui = 1;
     a.selected_param = 0;
     a.main_line_width = 4.5f;
+    a.tty_char_dt = 0.050f;
+    set_scene(&a, SCENE_CLASSIC);
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+    init_teletype_audio(&a);
 
     a.window = SDL_CreateWindow(
         "vectorgfx Vulkan example",
@@ -1803,6 +2221,20 @@ int main(void) {
             } else if (ev.type == SDL_KEYDOWN && !ev.key.repeat) {
                 if (ev.key.keysym.sym == SDLK_TAB) {
                     a.show_ui = !a.show_ui;
+                } else if (ev.key.keysym.sym == SDLK_1) {
+                    set_scene(&a, SCENE_CLASSIC);
+                } else if (ev.key.keysym.sym == SDLK_2) {
+                    set_scene(&a, SCENE_WIREFRAME_CUBE);
+                } else if (ev.key.keysym.sym == SDLK_3) {
+                    set_scene(&a, SCENE_STARFIELD);
+                } else if (ev.key.keysym.sym == SDLK_4) {
+                    set_scene(&a, SCENE_SURFACE_PLOT);
+                } else if (ev.key.keysym.sym == SDLK_5) {
+                    set_scene(&a, SCENE_SYNTHWAVE);
+                } else if (ev.key.keysym.sym == SDLK_6) {
+                    set_scene(&a, SCENE_FILL_PRIMS);
+                } else if (ev.key.keysym.sym == SDLK_r) {
+                    reset_teletype(&a);
                 }
             }
         }

@@ -5,14 +5,10 @@ layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 out_color;
 
 layout(push_constant) uniform PostPC {
-    vec2 texel;
-    float bloom_strength;
-    float bloom_radius_px;
-    float vignette_strength;
-    float barrel_distortion;
-    float scanline_strength;
-    float noise_strength;
-    float time_s;
+    vec4 p0; /* texel.x, texel.y, bloom_strength, bloom_radius */
+    vec4 p1; /* vignette, barrel, scanline, noise */
+    vec4 p2; /* time_s, ui_enable, ui_x, ui_y */
+    vec4 p3; /* ui_w, ui_h, pad0, pad1 */
 } pc;
 
 void main() {
@@ -24,9 +20,11 @@ void main() {
     c += texture(scene_tex, uv).rgb * weights[0];
     w += weights[0];
 
-    float radius = max(pc.bloom_radius_px, 0.25);
+    vec2 texel = pc.p0.xy;
+    float bloom_strength = pc.p0.z;
+    float radius = max(pc.p0.w, 0.25);
     for (int i = 1; i < 5; ++i) {
-        vec2 d = pc.texel * float(i) * radius;
+        vec2 d = texel * float(i) * radius;
         c += texture(scene_tex, uv + vec2(d.x, 0.0)).rgb * weights[i];
         c += texture(scene_tex, uv - vec2(d.x, 0.0)).rgb * weights[i];
         c += texture(scene_tex, uv + vec2(0.0, d.y)).rgb * weights[i];
@@ -35,5 +33,5 @@ void main() {
     }
 
     c /= max(w, 1e-5);
-    out_color = vec4(c * pc.bloom_strength, 1.0);
+    out_color = vec4(c * bloom_strength, 1.0);
 }

@@ -7,14 +7,10 @@ layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 out_color;
 
 layout(push_constant) uniform PostPC {
-    vec2 texel;
-    float bloom_strength;
-    float bloom_radius_px;
-    float vignette_strength;
-    float barrel_distortion;
-    float scanline_strength;
-    float noise_strength;
-    float time_s;
+    vec4 p0; /* texel.x, texel.y, bloom_strength, bloom_radius */
+    vec4 p1; /* vignette, barrel, scanline, noise */
+    vec4 p2; /* time_s, ui_enable, ui_x, ui_y */
+    vec4 p3; /* ui_w, ui_h, pad0, pad1 */
 } pc;
 
 float luma(vec3 c) {
@@ -78,27 +74,38 @@ vec2 barrel_uv(vec2 p, float k) {
 }
 
 void main() {
-    vec2 ui_max = vec2(592.0 * pc.texel.x, 704.0 * pc.texel.y);
-    bool in_ui = (uv.x <= ui_max.x && uv.y <= ui_max.y);
+    vec2 texel = pc.p0.xy;
+    float vignette_strength = pc.p1.x;
+    float barrel_distortion = pc.p1.y;
+    float scanline_strength = pc.p1.z;
+    float noise_strength = pc.p1.w;
+    float time_s = pc.p2.x;
+    float ui_enable = pc.p2.y;
+    vec2 ui_pos = pc.p2.zw;
+    vec2 ui_size = pc.p3.xy;
+    vec2 ui_min = ui_pos;
+    vec2 ui_max = ui_pos + ui_size;
+    bool in_ui = (ui_enable > 0.5) && (uv.x >= ui_min.x && uv.x <= ui_max.x && uv.y >= ui_min.y && uv.y <= ui_max.y);
 
-    float barrel_k = in_ui ? 0.0 : pc.barrel_distortion;
+    float barrel_k = in_ui ? 0.0 : barrel_distortion;
     vec2 uv_dist = barrel_uv(uv, barrel_k);
+    bool oob = any(lessThan(uv_dist, vec2(0.0))) || any(greaterThan(uv_dist, vec2(1.0)));
     vec2 uv_clamped = clamp(uv_dist, vec2(0.0), vec2(1.0));
 
-    vec3 scene_aa = fxaa_scene(scene_tex, uv_clamped, pc.texel);
-    vec3 bloom = texture(bloom_tex, uv_clamped).rgb;
+    vec3 scene_aa = oob ? vec3(0.0) : fxaa_scene(scene_tex, uv_clamped, texel);
+    vec3 bloom = oob ? vec3(0.0) : texture(bloom_tex, uv_clamped).rgb;
     vec3 color = scene_aa + bloom * (in_ui ? 0.18 : 1.0);
 
     if (!in_ui) {
         float vig_r = length(uv - vec2(0.5)) * 1.4142;
-        float vig = 1.0 - pc.vignette_strength * smoothstep(0.35, 1.0, vig_r);
+        float vig = 1.0 - vignette_strength * smoothstep(0.35, 1.0, vig_r);
         color *= max(vig, 0.0);
 
-        float scan = 0.5 + 0.5 * sin((uv.y + pc.time_s * 0.015) * 3.14159265 * 720.0);
-        color *= 1.0 - scan * pc.scanline_strength * 0.35;
+        float scan = 0.5 + 0.5 * sin((uv.y + time_s * 0.015) * 3.14159265 * 720.0);
+        color *= 1.0 - scan * scanline_strength * 0.35;
 
-        float n = hash12(uv * vec2(1920.0, 1080.0) + vec2(pc.time_s * 31.17, pc.time_s * 17.03)) - 0.5;
-        color += n * pc.noise_strength * 0.12;
+        float n = hash12(uv * vec2(1920.0, 1080.0) + vec2(time_s * 31.17, time_s * 17.03)) - 0.5;
+        color += n * noise_strength * 0.12;
     }
 
     color = max(color, vec3(0.0));
