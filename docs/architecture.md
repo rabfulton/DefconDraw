@@ -4,7 +4,7 @@
 
 - `vg_core` (`src/vg.c`): public API, handles, command validation, frame sequencing.
 - `vg_ui` (`src/vg_ui.c`): reusable immediate-mode style debug UI helpers built from core primitives.
-- `vg_ui_ext` (`src/vg_ui_ext.c`): higher-level instrument primitives (meters/radials) for dashboards/HUDs.
+- `vg_ui_ext` (`src/vg_ui_ext.c`): higher-level instrument primitives (meters, graphs, history helpers) for dashboards/HUDs.
 - `vg_vk` (`src/backends/vulkan`): GPU resource management and drawing pipelines.
 - `vg_fx` (`src/fx`): retro display model passes (bloom, persistence, flicker/jitter).
 - CPU debug preview: backend can rasterize staged triangles to RGBA8 for fast iteration.

@@ -22,8 +22,8 @@
 #include "demo_fullscreen_vert_spv.h"
 #endif
 
-#define APP_WIDTH 1280
-#define APP_HEIGHT 720
+#define APP_WIDTH 1440
+#define APP_HEIGHT 900
 #define APP_MAX_SWAPCHAIN_IMAGES 8
 
 typedef struct post_pc {
@@ -125,6 +125,11 @@ typedef struct app {
     char profile_path[512];
     float boxed_font_weight;
     int force_clear_frames;
+    vg_ui_history cpu_hist;
+    vg_ui_history net_hist;
+    float cpu_hist_buf[180];
+    float net_hist_buf[180];
+    float fft_bins[48];
 } app;
 
 enum {
@@ -1779,20 +1784,20 @@ static vg_result draw_scene_classic(app* a, const vg_stroke_style* halo_s, const
     d.show_ticks = 1;
 
     vg_result vr;
-    d.rect = (vg_rect){w * 0.08f, h * 0.64f, w * 0.36f, 32.0f};
+    d.rect = (vg_rect){w * 0.05f, h * 0.64f, w * 0.36f, 32.0f};
     d.label = "CPU %";
     d.value = cpu;
     vr = vg_ui_meter_linear(a->vg, &d, &ms);
     if (vr != VG_OK) return vr;
 
-    d.rect = (vg_rect){w * 0.08f, h * 0.55f, w * 0.36f, 32.0f};
+    d.rect = (vg_rect){w * 0.05f, h * 0.55f, w * 0.36f, 32.0f};
     d.label = "MEM %";
     d.value = mem;
     vr = vg_ui_meter_linear(a->vg, &d, &ms);
     if (vr != VG_OK) return vr;
 
     d.mode = VG_UI_METER_CONTINUOUS;
-    d.rect = (vg_rect){w * 0.08f, h * 0.46f, w * 0.36f, 32.0f};
+    d.rect = (vg_rect){w * 0.05f, h * 0.46f, w * 0.36f, 32.0f};
     d.label = "NET IN";
     d.value = net;
     vr = vg_ui_meter_linear(a->vg, &d, &ms);
@@ -1803,19 +1808,121 @@ static vg_result draw_scene_classic(app* a, const vg_stroke_style* halo_s, const
     d.segment_gap_px = 3.0f;
     d.label = "THERM";
     d.value = therm;
-    vr = vg_ui_meter_radial(a->vg, (vg_vec2){w * 0.68f, h * 0.60f}, 110.0f, &d, &ms);
+    vr = vg_ui_meter_radial(a->vg, (vg_vec2){w * 0.70f, h * 0.74f}, 106.0f, &d, &ms);
     if (vr != VG_OK) return vr;
 
     d.mode = VG_UI_METER_CONTINUOUS;
     d.label = "BATTERY";
     d.value = batt;
-    vr = vg_ui_meter_radial(a->vg, (vg_vec2){w * 0.84f, h * 0.60f}, 84.0f, &d, &ms);
+    vr = vg_ui_meter_radial(a->vg, (vg_vec2){w * 0.86f, h * 0.74f}, 80.0f, &d, &ms);
+    if (vr != VG_OK) return vr;
+
+    vg_ui_history_push(&a->cpu_hist, cpu);
+    vg_ui_history_push(&a->net_hist, net);
+    for (size_t i = 0; i < sizeof(a->fft_bins) / sizeof(a->fft_bins[0]); ++i) {
+        float u = (float)i / (float)(sizeof(a->fft_bins) / sizeof(a->fft_bins[0]) - 1u);
+        float env = 1.0f - fabsf(u * 2.0f - 1.0f) * 0.55f;
+        float wob = sinf(t * (1.2f + u * 3.1f) + u * 9.0f) * 0.5f + 0.5f;
+        a->fft_bins[i] = clampf(wob * env * 100.0f, 0.0f, 100.0f);
+    }
+
+    vg_ui_graph_style gs;
+    gs.frame = ms.frame;
+    gs.line = ms.fill;
+    gs.line.width_px = 2.0f;
+    gs.bar = ms.fill;
+    gs.grid = ms.tick;
+    gs.grid.intensity = 0.45f;
+    gs.text = ms.text;
+
+    float cpu_line[180];
+    float net_line[180];
+    size_t cpu_n = vg_ui_history_linearize(&a->cpu_hist, cpu_line, sizeof(cpu_line) / sizeof(cpu_line[0]));
+    size_t net_n = vg_ui_history_linearize(&a->net_hist, net_line, sizeof(net_line) / sizeof(net_line[0]));
+
+    vg_ui_graph_desc gd;
+    gd.min_value = 0.0f;
+    gd.max_value = 100.0f;
+    gd.show_grid = 1;
+    gd.show_minmax_labels = 0;
+
+    gd.rect = (vg_rect){w * 0.05f, h * 0.16f, w * 0.36f, h * 0.20f};
+    gd.samples = cpu_line;
+    gd.sample_count = cpu_n > 0u ? cpu_n : 1u;
+    gd.label = "CPU TREND";
+    vr = vg_ui_graph_line(a->vg, &gd, &gs);
+    if (vr != VG_OK) return vr;
+
+    gd.rect = (vg_rect){w * 0.05f, h * 0.01f, w * 0.36f, h * 0.12f};
+    gd.samples = net_line;
+    gd.sample_count = net_n > 0u ? net_n : 1u;
+    gd.label = "NET TREND";
+    gd.show_minmax_labels = 0;
+    vr = vg_ui_graph_line(a->vg, &gd, &gs);
+    if (vr != VG_OK) return vr;
+
+    gd.rect = (vg_rect){w * 0.52f, h * 0.08f, w * 0.40f, h * 0.18f};
+    gd.samples = a->fft_bins;
+    gd.sample_count = sizeof(a->fft_bins) / sizeof(a->fft_bins[0]);
+    gd.label = "SPECTRUM";
+    gd.show_grid = 0;
+    gd.show_minmax_labels = 0;
+    vr = vg_ui_graph_bars(a->vg, &gd, &gs);
+    if (vr != VG_OK) return vr;
+
+    float hist_bins[12];
+    for (size_t i = 0; i < sizeof(hist_bins) / sizeof(hist_bins[0]); ++i) {
+        float u = (float)i / (float)(sizeof(hist_bins) / sizeof(hist_bins[0]) - 1u);
+        float wave = 0.55f + 0.45f * sinf(t * (0.9f + u * 1.5f) + u * 5.0f);
+        float bump_a = expf(-16.0f * (u - 0.22f) * (u - 0.22f));
+        float bump_b = expf(-18.0f * (u - 0.73f) * (u - 0.73f));
+        hist_bins[i] = clampf((wave * 0.6f + (bump_a + bump_b) * 0.55f) * 100.0f, 2.0f, 100.0f);
+    }
+    vg_ui_histogram_desc hd;
+    hd.rect = (vg_rect){w * 0.52f, h * 0.30f, w * 0.40f, h * 0.16f};
+    hd.bins = hist_bins;
+    hd.bin_count = sizeof(hist_bins) / sizeof(hist_bins[0]);
+    hd.min_value = 0.0f;
+    hd.max_value = 100.0f;
+    hd.label = "BIN HISTOGRAM";
+    hd.x_label = "FREQ";
+    hd.y_label = "AMP";
+    hd.show_grid = 1;
+    hd.show_axes = 1;
+    vr = vg_ui_histogram(a->vg, &hd, &gs);
+    if (vr != VG_OK) return vr;
+
+    float pie_values[5] = {
+        12.0f + 7.0f * (sinf(t * 0.52f) * 0.5f + 0.5f),
+        18.0f + 8.0f * (sinf(t * 0.77f + 0.7f) * 0.5f + 0.5f),
+        22.0f + 6.0f * (sinf(t * 0.63f + 2.3f) * 0.5f + 0.5f),
+        10.0f + 5.0f * (sinf(t * 1.13f + 1.2f) * 0.5f + 0.5f),
+        14.0f + 4.0f * (sinf(t * 0.91f + 2.7f) * 0.5f + 0.5f)
+    };
+    vg_color pie_colors[5] = {
+        {0.20f, 1.00f, 0.42f, 0.78f},
+        {0.25f, 0.95f, 0.90f, 0.78f},
+        {0.70f, 1.00f, 0.45f, 0.76f},
+        {0.15f, 0.75f, 0.30f, 0.80f},
+        {0.85f, 1.00f, 0.55f, 0.72f}
+    };
+    vg_ui_pie_desc pd;
+    pd.center = (vg_vec2){w * 0.50f, h * 0.79f};
+    pd.radius_px = 72.0f;
+    static const char* pie_labels[5] = {"CPU", "GPU", "IO", "NET", "AUX"};
+    pd.values = pie_values;
+    pd.value_count = sizeof(pie_values) / sizeof(pie_values[0]);
+    pd.colors = pie_colors;
+    pd.labels = pie_labels;
+    pd.label = NULL;
+    pd.show_percent_labels = 1;
+    vr = vg_ui_pie_chart(a->vg, &pd, &ms.frame, &ms.text);
     if (vr != VG_OK) return vr;
 
     vg_stroke_style ttl = ms.text;
     ttl.width_px = 1.5f;
     ttl.intensity = 1.2f;
-    return vg_draw_text(a->vg, "INSTRUMENT BUS ACTIVE", (vg_vec2){w * 0.08f, h * 0.76f}, 17.0f, 1.0f, &ttl, NULL);
+    return vg_draw_text(a->vg, "INSTRUMENT BUS ACTIVE", (vg_vec2){w * 0.06f, h * 0.76f}, 17.0f, 1.0f, &ttl, NULL);
 }
 
 static vg_result draw_scene_wire_cube(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h, float jx, float jy) {
@@ -2450,6 +2557,12 @@ int main(void) {
     a.main_line_width = 1.5f;
     a.boxed_font_weight = 0.25f;
     a.tty_char_dt = 0.050f;
+    a.cpu_hist.data = a.cpu_hist_buf;
+    a.cpu_hist.capacity = sizeof(a.cpu_hist_buf) / sizeof(a.cpu_hist_buf[0]);
+    vg_ui_history_reset(&a.cpu_hist);
+    a.net_hist.data = a.net_hist_buf;
+    a.net_hist.capacity = sizeof(a.net_hist_buf) / sizeof(a.net_hist_buf[0]);
+    vg_ui_history_reset(&a.net_hist);
     set_scene(&a, SCENE_WIREFRAME_CUBE);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {

@@ -436,6 +436,70 @@ Draws a horizontal linear meter.
 
 Draws a radial meter with arc/ticks and optional needle/value text.
 
+### `vg_ui_graph_style`
+
+Style bundle for graph drawing:
+- `frame`
+- `line`
+- `bar`
+- `grid`
+- `text`
+
+### `vg_ui_graph_desc`
+
+Graph descriptor:
+- placement: `rect`
+- data: `samples`, `sample_count`
+- value domain: `min_value`, `max_value`
+- text: `label`
+- display flags: `show_grid`, `show_minmax_labels`
+
+### `vg_ui_history`
+
+Caller-owned rolling history helper:
+- `data`, `capacity`, `count`, `head`
+
+### `vg_ui_history_reset(vg_ui_history* h)`
+### `vg_ui_history_push(vg_ui_history* h, float value)`
+### `vg_ui_history_linearize(const vg_ui_history* h, float* out, size_t out_cap)`
+
+Convenience helpers for timeline widgets in immediate-mode usage.
+
+### `vg_ui_graph_line(vg_context* ctx, const vg_ui_graph_desc* desc, const vg_ui_graph_style* style)`
+
+Draws a line graph from sample history.
+
+### `vg_ui_graph_bars(vg_context* ctx, const vg_ui_graph_desc* desc, const vg_ui_graph_style* style)`
+
+Draws a bar graph/histogram from sample values.
+
+### `vg_ui_histogram_desc`
+
+Histogram descriptor:
+- placement: `rect`
+- data: `bins`, `bin_count`
+- value domain: `min_value`, `max_value`
+- text: `label`, `x_label`, `y_label`
+- display flags: `show_grid`, `show_axes`
+
+### `vg_ui_histogram(vg_context* ctx, const vg_ui_histogram_desc* desc, const vg_ui_graph_style* style)`
+
+Draws a histogram widget with optional axes and labels.
+
+### `vg_ui_pie_desc`
+
+Pie/donut descriptor:
+- placement: `center`, `radius_px`
+- data: `values`, `value_count`
+- optional per-slice colors: `colors`
+- optional per-slice labels: `labels`
+- text: `label`
+- display flag: `show_percent_labels`
+
+### `vg_ui_pie_chart(vg_context* ctx, const vg_ui_pie_desc* desc, const vg_stroke_style* outline_style, const vg_stroke_style* text_style)`
+
+Draws a pie/donut chart with optional percentage labels.
+
 ## Debug Raster API
 
 ### `vg_debug_rasterize_rgba8(vg_context* ctx, uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride_bytes)`
