@@ -1,6 +1,6 @@
 # API Reference
 
-This document describes the current public API in `include/vg.h` and `include/vg_ui.h`.
+This document describes the current public API in `include/vg.h`, `include/vg_ui.h`, and `include/vg_ui_ext.h`.
 
 ## Versioning
 
@@ -403,6 +403,38 @@ Panel-level descriptor:
 ### `vg_ui_draw_slider_panel(vg_context* ctx, const vg_ui_slider_panel_desc* desc)`
 
 Draws a reusable immediate-mode style debug panel with labeled sliders and value readouts.
+
+## Meter API (`vg_ui_ext.h`)
+
+### `vg_ui_meter_mode`
+
+- `VG_UI_METER_CONTINUOUS`
+- `VG_UI_METER_SEGMENTED`
+
+### `vg_ui_meter_style`
+
+Style bundle for meter drawing:
+- `frame`
+- `fill`
+- `bg`
+- `tick`
+- `text`
+
+### `vg_ui_meter_desc`
+
+Meter descriptor:
+- placement: `rect`
+- value domain: `min_value`, `max_value`, `value`
+- presentation: `mode`, `segments`, `segment_gap_px`
+- text: `label`, `value_fmt`, `show_value`, `show_ticks`
+
+### `vg_ui_meter_linear(vg_context* ctx, const vg_ui_meter_desc* desc, const vg_ui_meter_style* style)`
+
+Draws a horizontal linear meter.
+
+### `vg_ui_meter_radial(vg_context* ctx, vg_vec2 center, float radius_px, const vg_ui_meter_desc* desc, const vg_ui_meter_style* style)`
+
+Draws a radial meter with arc/ticks and optional needle/value text.
 
 ## Debug Raster API
 

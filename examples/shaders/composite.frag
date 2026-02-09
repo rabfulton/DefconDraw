@@ -83,8 +83,9 @@ void main() {
     float ui_enable = pc.p2.y;
     vec2 ui_pos = pc.p2.zw;
     vec2 ui_size = pc.p3.xy;
-    vec2 ui_min = ui_pos;
-    vec2 ui_max = ui_pos + ui_size;
+    vec2 ui_pad = texel * 10.0;
+    vec2 ui_min = ui_pos - ui_pad;
+    vec2 ui_max = ui_pos + ui_size + ui_pad;
     bool in_ui = (ui_enable > 0.5) && (uv.x >= ui_min.x && uv.x <= ui_max.x && uv.y >= ui_min.y && uv.y <= ui_max.y);
 
     float barrel_k = in_ui ? 0.0 : barrel_distortion;

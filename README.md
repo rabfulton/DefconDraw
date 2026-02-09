@@ -1,4 +1,4 @@
-# vectorgfx
+# Defcon Draw
 
 A C vector graphics library scaffold aimed at Linux + Vulkan with a retro vector-display look.
 
@@ -7,6 +7,7 @@ A C vector graphics library scaffold aimed at Linux + Vulkan with a retro vector
 This repository currently provides:
 - a public C API in `include/vg.h`
 - reusable UI helper API in `include/vg_ui.h`
+- extended meter widgets API in `include/vg_ui_ext.h`
 - detailed API docs in `docs/api.md`
 - lifecycle/path containers plus input validation in `src/vg.c`
 - internal backend dispatch (`src/vg_internal.h`) with Vulkan hook wiring
@@ -31,7 +32,7 @@ The Vulkan + SDL example now includes persistence by retaining swapchain content
 The Vulkan + SDL example also applies flicker/jitter and a real bloom composite pass (scene RT -> bloom RT -> swapchain composite).
 The Vulkan + SDL example now includes an on-screen debug panel (FPS + live retro parameter tuning) driven by vector button/slider primitives.
 The Vulkan backend submission path batches recorded draws by blend mode to reduce pipeline switches.
-The Vulkan + SDL example includes multiple visual test scenes (keys `1-7`) and a teletype overlay with per-character beeps (`R` to replay).
+The Vulkan + SDL example includes multiple visual test scenes (keys `1-7`, including a meters/instrument panel on slot `1`) and a teletype overlay with per-character beeps (`R` to replay).
 The Vulkan + SDL example stores profile settings on the client side (`F5` save, `F9` load) and applies them back through `vg_set_crt_profile`.
 The Vulkan + SDL example includes a `BOX WEIGHT` control for boxed-title chunkiness (`vg_draw_text_boxed_weighted`).
 

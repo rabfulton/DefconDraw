@@ -1,5 +1,6 @@
 #include "vg.h"
 #include "vg_ui.h"
+#include "vg_ui_ext.h"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
@@ -246,7 +247,7 @@ static void reset_teletype(app* a) {
 
 static void set_scene(app* a, int mode) {
     static const char* k_scene_text[SCENE_COUNT] = {
-        "STATUS READY\nMODE 1 CLASSIC VECTOR\nWAVE + TRIANGLE TEST PATTERN",
+        "STATUS READY\nMODE 1 METERS PANEL\nLINEAR + RADIAL TEST",
         "STATUS READY\nMODE 2 WIREFRAME CUBE\nROTATION + PERSPECTIVE TEST",
         "STATUS READY\nMODE 3 STARFIELD\nDEPTH MOTION + STREAK TEST",
         "STATUS READY\nMODE 4 SURFACE PLOT\n3D FUNCTION GRID TEST",
@@ -1370,11 +1371,18 @@ static int create_vg_context(app* a) {
         crt = a->crt_profile;
     } else {
         vg_make_crt_profile(VG_CRT_PRESET_WOPR, &crt);
+        crt.beam_core_width_px = 0.600001f;
+        crt.beam_halo_width_px = 2.8f;
+        crt.beam_intensity = 0.85f;
         crt.bloom_strength = 0.75f;
         crt.bloom_radius_px = 4.0f;
-        crt.persistence_decay = 0.92f;
+        crt.persistence_decay = 0.70f;
         crt.jitter_amount = 0.15f;
-        crt.flicker_amount = 0.1f;
+        crt.flicker_amount = 0.10f;
+        crt.vignette_strength = 0.14f;
+        crt.barrel_distortion = 0.02f;
+        crt.scanline_strength = 0.12f;
+        crt.noise_strength = 0.04f;
     }
     clamp_crt_profile(&crt);
     vg_set_crt_profile(a->vg, &crt);
@@ -1730,26 +1738,84 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
 }
 
 static vg_result draw_scene_classic(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float cx, float cy, float jx, float jy) {
+    (void)cx;
+    (void)cy;
+    (void)jx;
+    (void)jy;
+
+    float w = (float)a->swapchain_extent.width;
+    float h = (float)a->swapchain_extent.height;
+    float cpu = 52.0f + 42.0f * sinf(t * 0.92f);
+    float mem = 60.0f + 22.0f * sinf(t * 0.43f + 1.3f);
+    float net = 100.0f * (0.5f + 0.5f * sinf(t * 1.85f + 0.5f));
+    float therm = 35.0f + 60.0f * (0.5f + 0.5f * sinf(t * 0.34f + 2.1f));
+    float batt = 50.0f + 50.0f * sinf(t * 0.18f + 0.8f);
+
+    vg_ui_meter_style ms;
+    ms.frame = *main_s;
+    ms.frame.blend = VG_BLEND_ALPHA;
+    ms.frame.intensity = main_s->intensity * 0.85f;
+    ms.bg = *halo_s;
+    ms.bg.blend = VG_BLEND_ALPHA;
+    ms.bg.intensity = halo_s->intensity * 0.45f;
+    ms.fill = *main_s;
+    ms.fill.blend = VG_BLEND_ADDITIVE;
+    ms.fill.intensity = main_s->intensity * 1.15f;
+    ms.tick = *main_s;
+    ms.tick.blend = VG_BLEND_ALPHA;
+    ms.tick.width_px = 1.0f;
+    ms.tick.intensity = 0.9f;
+    ms.text = ms.tick;
+    ms.text.width_px = 1.25f;
+
+    vg_ui_meter_desc d;
+    d.min_value = 0.0f;
+    d.max_value = 100.0f;
+    d.mode = VG_UI_METER_SEGMENTED;
+    d.segments = 18;
+    d.segment_gap_px = 2.0f;
+    d.value_fmt = "%5.1f";
+    d.show_value = 1;
+    d.show_ticks = 1;
+
     vg_result vr;
-    vg_vec2 tri[4] = {
-        {cx + cosf(t) * 120.0f + jx, cy - 140.0f + jy},
-        {cx + 140.0f + jx, cy + 100.0f + jy},
-        {cx - 140.0f + jx, cy + 100.0f + jy},
-        {cx + cosf(t) * 120.0f + jx, cy - 140.0f + jy}
-    };
-
-    vr = vg_draw_polyline(a->vg, tri, 4, halo_s, 0);
-    if (vr != VG_OK) return vr;
-    vr = vg_draw_polyline(a->vg, tri, 4, main_s, 0);
+    d.rect = (vg_rect){w * 0.08f, h * 0.64f, w * 0.36f, 32.0f};
+    d.label = "CPU %";
+    d.value = cpu;
+    vr = vg_ui_meter_linear(a->vg, &d, &ms);
     if (vr != VG_OK) return vr;
 
-    vg_path_clear(a->wave_path);
-    vg_path_move_to(a->wave_path, (vg_vec2){120.0f + jx, cy + 220.0f + jy});
-    vg_path_cubic_to(a->wave_path, (vg_vec2){280.0f + jx, cy + 80.0f + sinf(t) * 50.0f + jy}, (vg_vec2){420.0f + jx, cy + 360.0f + jy}, (vg_vec2){580.0f + jx, cy + 220.0f + jy});
-    vg_path_cubic_to(a->wave_path, (vg_vec2){760.0f + jx, cy + 70.0f + jy}, (vg_vec2){920.0f + jx, cy + 370.0f + cosf(t * 1.2f) * 60.0f + jy}, (vg_vec2){1120.0f + jx, cy + 220.0f + jy});
-    vr = vg_draw_path_stroke(a->vg, a->wave_path, halo_s);
+    d.rect = (vg_rect){w * 0.08f, h * 0.55f, w * 0.36f, 32.0f};
+    d.label = "MEM %";
+    d.value = mem;
+    vr = vg_ui_meter_linear(a->vg, &d, &ms);
     if (vr != VG_OK) return vr;
-    return vg_draw_path_stroke(a->vg, a->wave_path, main_s);
+
+    d.mode = VG_UI_METER_CONTINUOUS;
+    d.rect = (vg_rect){w * 0.08f, h * 0.46f, w * 0.36f, 32.0f};
+    d.label = "NET IN";
+    d.value = net;
+    vr = vg_ui_meter_linear(a->vg, &d, &ms);
+    if (vr != VG_OK) return vr;
+
+    d.mode = VG_UI_METER_SEGMENTED;
+    d.segments = 12;
+    d.segment_gap_px = 3.0f;
+    d.label = "THERM";
+    d.value = therm;
+    vr = vg_ui_meter_radial(a->vg, (vg_vec2){w * 0.68f, h * 0.60f}, 110.0f, &d, &ms);
+    if (vr != VG_OK) return vr;
+
+    d.mode = VG_UI_METER_CONTINUOUS;
+    d.label = "BATTERY";
+    d.value = batt;
+    vr = vg_ui_meter_radial(a->vg, (vg_vec2){w * 0.84f, h * 0.60f}, 84.0f, &d, &ms);
+    if (vr != VG_OK) return vr;
+
+    vg_stroke_style ttl = ms.text;
+    ttl.width_px = 1.5f;
+    ttl.intensity = 1.2f;
+    return vg_draw_text(a->vg, "INSTRUMENT BUS ACTIVE", (vg_vec2){w * 0.08f, h * 0.76f}, 17.0f, 1.0f, &ttl, NULL);
 }
 
 static vg_result draw_scene_wire_cube(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h, float jx, float jy) {
@@ -2269,9 +2335,13 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     pc.p2[0] = t;
     pc.p2[1] = a->show_ui ? 1.0f : 0.0f;
     pc.p2[2] = k_ui_x / (float)a->swapchain_extent.width;
-    pc.p2[3] = k_ui_y / (float)a->swapchain_extent.height;
     pc.p3[0] = k_ui_w / (float)a->swapchain_extent.width;
     pc.p3[1] = k_ui_h / (float)a->swapchain_extent.height;
+    /* UI drawing uses bottom-origin coordinates; composite UV mask expects top-origin. */
+    pc.p2[3] = 1.0f - ((k_ui_y + k_ui_h) / (float)a->swapchain_extent.height);
+    if (pc.p2[3] < 0.0f) {
+        pc.p2[3] = 0.0f;
+    }
     vkCmdPushConstants(cmd, a->post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
@@ -2375,12 +2445,12 @@ static void cleanup(app* a) {
 int main(void) {
     app a;
     memset(&a, 0, sizeof(a));
-    a.show_ui = 1;
+    a.show_ui = 0;
     a.selected_param = 0;
-    a.main_line_width = 4.5f;
-    a.boxed_font_weight = 1.0f;
+    a.main_line_width = 1.5f;
+    a.boxed_font_weight = 0.25f;
     a.tty_char_dt = 0.050f;
-    set_scene(&a, SCENE_CLASSIC);
+    set_scene(&a, SCENE_WIREFRAME_CUBE);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
