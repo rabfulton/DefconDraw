@@ -59,6 +59,21 @@ typedef struct vg_rect {
     float h;
 } vg_rect;
 
+typedef enum vg_text_align {
+    VG_TEXT_ALIGN_LEFT = 0,
+    VG_TEXT_ALIGN_CENTER = 1,
+    VG_TEXT_ALIGN_RIGHT = 2
+} vg_text_align;
+
+typedef struct vg_mat2x3 {
+    float m00;
+    float m01;
+    float m02;
+    float m10;
+    float m11;
+    float m12;
+} vg_mat2x3;
+
 typedef struct vg_stroke_style {
     float width_px;
     float intensity;
@@ -144,6 +159,14 @@ void vg_get_retro_params(vg_context* ctx, vg_retro_params* out_params);
 void vg_make_crt_profile(vg_crt_preset preset, vg_crt_profile* out_profile);
 void vg_set_crt_profile(vg_context* ctx, const vg_crt_profile* profile);
 void vg_get_crt_profile(vg_context* ctx, vg_crt_profile* out_profile);
+void vg_transform_reset(vg_context* ctx);
+vg_result vg_transform_push(vg_context* ctx);
+vg_result vg_transform_pop(vg_context* ctx);
+void vg_transform_set(vg_context* ctx, vg_mat2x3 m);
+vg_mat2x3 vg_transform_get(vg_context* ctx);
+void vg_transform_translate(vg_context* ctx, float tx, float ty);
+void vg_transform_scale(vg_context* ctx, float sx, float sy);
+void vg_transform_rotate(vg_context* ctx, float radians);
 
 vg_result vg_path_create(vg_context* ctx, vg_path** out_path);
 void vg_path_destroy(vg_path* path);
@@ -161,6 +184,8 @@ vg_result vg_fill_rect(vg_context* ctx, vg_rect rect, const vg_fill_style* style
 vg_result vg_fill_circle(vg_context* ctx, vg_vec2 center, float radius_px, const vg_fill_style* style, int segments);
 
 float vg_measure_text(const char* text, float size_px, float letter_spacing_px);
+float vg_measure_text_boxed(const char* text, float size_px, float letter_spacing_px);
+float vg_measure_text_wrapped(const char* text, float size_px, float letter_spacing_px, float wrap_width_px, size_t* out_line_count);
 vg_result vg_draw_text(
     vg_context* ctx,
     const char* text,
@@ -169,6 +194,35 @@ vg_result vg_draw_text(
     float letter_spacing_px,
     const vg_stroke_style* style,
     float* out_width_px
+);
+vg_result vg_draw_text_boxed(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float* out_width_px
+);
+vg_result vg_draw_text_boxed_weighted(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float weight,
+    float* out_width_px
+);
+vg_result vg_draw_text_wrapped(
+    vg_context* ctx,
+    const char* text,
+    vg_rect bounds,
+    float size_px,
+    float letter_spacing_px,
+    vg_text_align align,
+    const vg_stroke_style* style,
+    float* out_height_px
 );
 
 vg_result vg_draw_rect(vg_context* ctx, vg_rect rect, const vg_stroke_style* style);

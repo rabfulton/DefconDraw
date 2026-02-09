@@ -64,6 +64,36 @@ static int vg_fill_style_is_valid(const vg_fill_style* style) {
     return 1;
 }
 
+static vg_mat2x3 vg_mat_identity(void) {
+    vg_mat2x3 m = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    return m;
+}
+
+static int vg_mat_is_identity(vg_mat2x3 m) {
+    return m.m00 == 1.0f && m.m01 == 0.0f && m.m02 == 0.0f &&
+           m.m10 == 0.0f && m.m11 == 1.0f && m.m12 == 0.0f;
+}
+
+static vg_mat2x3 vg_mat_mul(vg_mat2x3 a, vg_mat2x3 b) {
+    vg_mat2x3 out = {
+        a.m00 * b.m00 + a.m01 * b.m10,
+        a.m00 * b.m01 + a.m01 * b.m11,
+        a.m00 * b.m02 + a.m01 * b.m12 + a.m02,
+        a.m10 * b.m00 + a.m11 * b.m10,
+        a.m10 * b.m01 + a.m11 * b.m11,
+        a.m10 * b.m02 + a.m11 * b.m12 + a.m12
+    };
+    return out;
+}
+
+static vg_vec2 vg_transform_point(vg_mat2x3 m, vg_vec2 p) {
+    vg_vec2 out = {
+        m.m00 * p.x + m.m01 * p.y + m.m02,
+        m.m10 * p.x + m.m11 * p.y + m.m12
+    };
+    return out;
+}
+
 static vg_crt_profile vg_crt_profile_for_preset(vg_crt_preset preset) {
     vg_crt_profile p = {0};
     switch (preset) {
@@ -187,6 +217,9 @@ static const uint8_t vg_glyph_W[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(2, 0), 
 static const uint8_t vg_glyph_X[] = {VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 0), VG_FONT_LAST};
 static const uint8_t vg_glyph_Y[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(4, 6), VG_FONT_POINT(8, 12), VG_FONT_UP, VG_FONT_POINT(4, 6), VG_FONT_POINT(4, 0), VG_FONT_LAST};
 static const uint8_t vg_glyph_Z[] = {VG_FONT_POINT(0, 12), VG_FONT_POINT(8, 12), VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_UP, VG_FONT_POINT(2, 6), VG_FONT_POINT(6, 6), VG_FONT_LAST};
+static const uint8_t vg_glyph_I_boxed[] = {
+    VG_FONT_POINT(0, 0), VG_FONT_POINT(8, 0), VG_FONT_POINT(8, 12), VG_FONT_POINT(0, 12), VG_FONT_POINT(0, 0), VG_FONT_LAST
+};
 
 static const uint8_t* vg_lookup_glyph(char c) {
     unsigned char uc = (unsigned char)c;
@@ -289,6 +322,15 @@ static const uint8_t* vg_lookup_glyph(char c) {
     }
 }
 
+static const uint8_t* vg_lookup_glyph_boxed(char c) {
+    unsigned char uc = (unsigned char)c;
+    char up = (char)toupper((int)uc);
+    if (up == 'I' || up == '1') {
+        return vg_glyph_I_boxed;
+    }
+    return vg_lookup_glyph(c);
+}
+
 static float vg_text_advance(float size_px, float letter_spacing_px) {
     float scale = size_px / 12.0f;
     return 12.0f * scale + letter_spacing_px;
@@ -307,6 +349,8 @@ vg_result vg_context_create(const vg_context_desc* desc, vg_context** out_ctx) {
     ctx->desc = *desc;
     ctx->crt = vg_crt_profile_for_preset(VG_CRT_PRESET_WOPR);
     vg_retro_from_crt(&ctx->retro, &ctx->crt);
+    ctx->transform = vg_mat_identity();
+    ctx->transform_stack_count = 0u;
 
     switch (desc->backend) {
         case VG_BACKEND_VULKAN:
@@ -351,6 +395,7 @@ vg_result vg_begin_frame(vg_context* ctx, const vg_frame_desc* frame) {
 
     ctx->frame = *frame;
     ctx->in_frame = 1;
+    vg_transform_reset(ctx);
     return VG_OK;
 }
 
@@ -417,6 +462,73 @@ void vg_get_crt_profile(vg_context* ctx, vg_crt_profile* out_profile) {
         return;
     }
     *out_profile = ctx->crt;
+}
+
+void vg_transform_reset(vg_context* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->transform = vg_mat_identity();
+    ctx->transform_stack_count = 0u;
+}
+
+vg_result vg_transform_push(vg_context* ctx) {
+    if (!ctx) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (ctx->transform_stack_count >= (uint32_t)(sizeof(ctx->transform_stack) / sizeof(ctx->transform_stack[0]))) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+    ctx->transform_stack[ctx->transform_stack_count++] = ctx->transform;
+    return VG_OK;
+}
+
+vg_result vg_transform_pop(vg_context* ctx) {
+    if (!ctx || ctx->transform_stack_count == 0u) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    ctx->transform = ctx->transform_stack[--ctx->transform_stack_count];
+    return VG_OK;
+}
+
+void vg_transform_set(vg_context* ctx, vg_mat2x3 m) {
+    if (!ctx) {
+        return;
+    }
+    ctx->transform = m;
+}
+
+vg_mat2x3 vg_transform_get(vg_context* ctx) {
+    if (!ctx) {
+        return vg_mat_identity();
+    }
+    return ctx->transform;
+}
+
+void vg_transform_translate(vg_context* ctx, float tx, float ty) {
+    if (!ctx || !isfinite(tx) || !isfinite(ty)) {
+        return;
+    }
+    vg_mat2x3 t = {1.0f, 0.0f, tx, 0.0f, 1.0f, ty};
+    ctx->transform = vg_mat_mul(ctx->transform, t);
+}
+
+void vg_transform_scale(vg_context* ctx, float sx, float sy) {
+    if (!ctx || !isfinite(sx) || !isfinite(sy)) {
+        return;
+    }
+    vg_mat2x3 s = {sx, 0.0f, 0.0f, 0.0f, sy, 0.0f};
+    ctx->transform = vg_mat_mul(ctx->transform, s);
+}
+
+void vg_transform_rotate(vg_context* ctx, float radians) {
+    if (!ctx || !isfinite(radians)) {
+        return;
+    }
+    float c = cosf(radians);
+    float s = sinf(radians);
+    vg_mat2x3 r = {c, -s, 0.0f, s, c, 0.0f};
+    ctx->transform = vg_mat_mul(ctx->transform, r);
 }
 
 vg_result vg_path_create(vg_context* ctx, vg_path** out_path) {
@@ -505,7 +617,39 @@ vg_result vg_draw_path_stroke(vg_context* ctx, const vg_path* path, const vg_str
         return VG_ERROR_UNSUPPORTED;
     }
 
-    return ctx->backend.ops->draw_path_stroke(ctx, path, style);
+    if (vg_mat_is_identity(ctx->transform)) {
+        return ctx->backend.ops->draw_path_stroke(ctx, path, style);
+    }
+
+    vg_path tmp = {0};
+    tmp.owner = ctx;
+    tmp.count = path->count;
+    tmp.cap = path->count;
+    tmp.cmds = (vg_path_cmd*)malloc(sizeof(*tmp.cmds) * path->count);
+    if (!tmp.cmds) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+    for (size_t i = 0; i < path->count; ++i) {
+        tmp.cmds[i] = path->cmds[i];
+        switch (tmp.cmds[i].type) {
+            case VG_CMD_MOVE_TO:
+            case VG_CMD_LINE_TO:
+                tmp.cmds[i].p[0] = vg_transform_point(ctx->transform, tmp.cmds[i].p[0]);
+                break;
+            case VG_CMD_CUBIC_TO:
+                tmp.cmds[i].p[0] = vg_transform_point(ctx->transform, tmp.cmds[i].p[0]);
+                tmp.cmds[i].p[1] = vg_transform_point(ctx->transform, tmp.cmds[i].p[1]);
+                tmp.cmds[i].p[2] = vg_transform_point(ctx->transform, tmp.cmds[i].p[2]);
+                break;
+            case VG_CMD_CLOSE:
+                break;
+            default:
+                break;
+        }
+    }
+    vg_result r = ctx->backend.ops->draw_path_stroke(ctx, &tmp, style);
+    free(tmp.cmds);
+    return r;
 }
 
 vg_result vg_draw_polyline(vg_context* ctx, const vg_vec2* points, size_t count, const vg_stroke_style* style, int closed) {
@@ -519,7 +663,20 @@ vg_result vg_draw_polyline(vg_context* ctx, const vg_vec2* points, size_t count,
         return VG_ERROR_UNSUPPORTED;
     }
 
-    return ctx->backend.ops->draw_polyline(ctx, points, count, style, closed);
+    if (vg_mat_is_identity(ctx->transform)) {
+        return ctx->backend.ops->draw_polyline(ctx, points, count, style, closed);
+    }
+
+    vg_vec2* transformed = (vg_vec2*)malloc(sizeof(*transformed) * count);
+    if (!transformed) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        transformed[i] = vg_transform_point(ctx->transform, points[i]);
+    }
+    vg_result r = ctx->backend.ops->draw_polyline(ctx, transformed, count, style, closed);
+    free(transformed);
+    return r;
 }
 
 vg_result vg_fill_convex(vg_context* ctx, const vg_vec2* points, size_t count, const vg_fill_style* style) {
@@ -532,7 +689,20 @@ vg_result vg_fill_convex(vg_context* ctx, const vg_vec2* points, size_t count, c
     if (!ctx->backend.ops || !ctx->backend.ops->fill_convex) {
         return VG_ERROR_UNSUPPORTED;
     }
-    return ctx->backend.ops->fill_convex(ctx, points, count, style);
+    if (vg_mat_is_identity(ctx->transform)) {
+        return ctx->backend.ops->fill_convex(ctx, points, count, style);
+    }
+
+    vg_vec2* transformed = (vg_vec2*)malloc(sizeof(*transformed) * count);
+    if (!transformed) {
+        return VG_ERROR_OUT_OF_MEMORY;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        transformed[i] = vg_transform_point(ctx->transform, points[i]);
+    }
+    vg_result r = ctx->backend.ops->fill_convex(ctx, transformed, count, style);
+    free(transformed);
+    return r;
 }
 
 vg_result vg_fill_rect(vg_context* ctx, vg_rect rect, const vg_fill_style* style) {
@@ -566,11 +736,10 @@ vg_result vg_fill_circle(vg_context* ctx, vg_vec2 center, float radius_px, const
     return r;
 }
 
-float vg_measure_text(const char* text, float size_px, float letter_spacing_px) {
+static float vg_measure_text_internal(const char* text, float size_px, float letter_spacing_px) {
     if (!text || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px)) {
         return 0.0f;
     }
-
     float adv = vg_text_advance(size_px, letter_spacing_px);
     float x = 0.0f;
     float max_x = 0.0f;
@@ -590,16 +759,17 @@ float vg_measure_text(const char* text, float size_px, float letter_spacing_px) 
     return max_x;
 }
 
-vg_result vg_draw_text(
+static vg_result vg_draw_text_internal(
     vg_context* ctx,
     const char* text,
     vg_vec2 origin,
     float size_px,
     float letter_spacing_px,
     const vg_stroke_style* style,
+    const uint8_t* (*lookup)(char),
     float* out_width_px
 ) {
-    if (!ctx || !text || !style || !ctx->in_frame || !vg_style_is_valid(style) || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px)) {
+    if (!ctx || !text || !style || !lookup || !ctx->in_frame || !vg_style_is_valid(style) || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px)) {
         return VG_ERROR_INVALID_ARGUMENT;
     }
 
@@ -621,7 +791,7 @@ vg_result vg_draw_text(
             continue;
         }
 
-        const uint8_t* glyph = vg_lookup_glyph(*p);
+        const uint8_t* glyph = lookup(*p);
         vg_vec2 run[8];
         size_t run_count = 0;
 
@@ -657,6 +827,246 @@ vg_result vg_draw_text(
     if (out_width_px) {
         *out_width_px = max_x - origin.x;
     }
+    return VG_OK;
+}
+
+float vg_measure_text(const char* text, float size_px, float letter_spacing_px) {
+    return vg_measure_text_internal(text, size_px, letter_spacing_px);
+}
+
+float vg_measure_text_boxed(const char* text, float size_px, float letter_spacing_px) {
+    return vg_measure_text_internal(text, size_px, letter_spacing_px);
+}
+
+float vg_measure_text_wrapped(const char* text, float size_px, float letter_spacing_px, float wrap_width_px, size_t* out_line_count) {
+    if (out_line_count) {
+        *out_line_count = 0u;
+    }
+    if (!text || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px)) {
+        return 0.0f;
+    }
+    if (!isfinite(wrap_width_px) || wrap_width_px <= 0.0f) {
+        float w = vg_measure_text_internal(text, size_px, letter_spacing_px);
+        if (out_line_count) {
+            *out_line_count = 1u;
+        }
+        return w;
+    }
+    float adv = vg_text_advance(size_px, letter_spacing_px);
+    float x = 0.0f;
+    float max_x = 0.0f;
+    size_t lines = 1u;
+    for (const char* p = text; *p; ++p) {
+        if (*p == '\n') {
+            if (x > max_x) {
+                max_x = x;
+            }
+            x = 0.0f;
+            lines++;
+            continue;
+        }
+        if (x > 0.0f && x + adv > wrap_width_px) {
+            if (x > max_x) {
+                max_x = x;
+            }
+            x = 0.0f;
+            lines++;
+        }
+        x += adv;
+    }
+    if (x > max_x) {
+        max_x = x;
+    }
+    if (out_line_count) {
+        *out_line_count = lines;
+    }
+    return max_x;
+}
+
+vg_result vg_draw_text(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float* out_width_px
+) {
+    return vg_draw_text_internal(ctx, text, origin, size_px, letter_spacing_px, style, vg_lookup_glyph, out_width_px);
+}
+
+vg_result vg_draw_text_boxed_weighted(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float weight,
+    float* out_width_px
+);
+
+vg_result vg_draw_text_boxed(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float* out_width_px
+) {
+    return vg_draw_text_boxed_weighted(ctx, text, origin, size_px, letter_spacing_px, style, 1.0f, out_width_px);
+}
+
+vg_result vg_draw_text_boxed_weighted(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float weight,
+    float* out_width_px
+) {
+    if (!ctx || !text || !style || !ctx->in_frame || !vg_style_is_valid(style) || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px)) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (!isfinite(weight)) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (weight < 0.25f) {
+        weight = 0.25f;
+    }
+    if (weight > 3.0f) {
+        weight = 3.0f;
+    }
+    {
+        float w01 = (weight - 0.25f) / (3.0f - 0.25f);
+        if (w01 < 0.0f) {
+            w01 = 0.0f;
+        }
+        if (w01 > 1.0f) {
+            w01 = 1.0f;
+        }
+        weight = w01;
+    }
+
+    /* Embolden glyph structure itself: thick contour pass + inner cutout + crisp edge. */
+    float px = size_px / 12.0f;
+    float outer_w = style->width_px + (0.9f + 2.7f * weight) * px;
+    float inner_w = outer_w - (0.55f + 1.4f * weight) * px;
+    float edge_w = style->width_px + (0.10f + 0.55f * weight) * px;
+    if (inner_w < 0.8f) {
+        inner_w = 0.8f;
+    }
+    if (edge_w < style->width_px) {
+        edge_w = style->width_px;
+    }
+
+    vg_stroke_style outer = *style;
+    outer.width_px = outer_w;
+    outer.cap = VG_LINE_CAP_BUTT;
+    outer.join = VG_LINE_JOIN_MITER;
+    outer.blend = VG_BLEND_ALPHA;
+    outer.intensity = style->intensity * 1.08f;
+
+    vg_stroke_style inner = outer;
+    inner.width_px = inner_w;
+    inner.color = (vg_color){0.0f, 0.0f, 0.0f, 1.0f};
+    inner.intensity = 1.0f;
+    inner.blend = VG_BLEND_ALPHA;
+
+    vg_stroke_style edge = *style;
+    edge.width_px = edge_w;
+    edge.cap = VG_LINE_CAP_BUTT;
+    edge.join = VG_LINE_JOIN_MITER;
+    edge.blend = VG_BLEND_ALPHA;
+
+    vg_result r = vg_draw_text_internal(ctx, text, origin, size_px, letter_spacing_px, &outer, vg_lookup_glyph_boxed, out_width_px);
+    if (r != VG_OK) {
+        return r;
+    }
+    r = vg_draw_text_internal(ctx, text, origin, size_px, letter_spacing_px, &inner, vg_lookup_glyph_boxed, NULL);
+    if (r != VG_OK) {
+        return r;
+    }
+    return vg_draw_text_internal(ctx, text, origin, size_px, letter_spacing_px, &edge, vg_lookup_glyph_boxed, NULL);
+}
+
+vg_result vg_draw_text_wrapped(
+    vg_context* ctx,
+    const char* text,
+    vg_rect bounds,
+    float size_px,
+    float letter_spacing_px,
+    vg_text_align align,
+    const vg_stroke_style* style,
+    float* out_height_px
+) {
+    if (!ctx || !text || !style || !ctx->in_frame || !vg_style_is_valid(style) || !isfinite(size_px) || size_px <= 0.0f || !isfinite(letter_spacing_px) || bounds.w <= 0.0f || bounds.h <= 0.0f) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+    if (align < VG_TEXT_ALIGN_LEFT || align > VG_TEXT_ALIGN_RIGHT) {
+        return VG_ERROR_INVALID_ARGUMENT;
+    }
+
+    float adv = vg_text_advance(size_px, letter_spacing_px);
+    float line_h = size_px * 1.35f;
+    float pen_y = bounds.y;
+    float max_w = 0.0f;
+    char line[1024];
+    size_t li = 0u;
+    float line_w = 0.0f;
+
+    for (size_t i = 0;; ++i) {
+        char c = text[i];
+        int flush = 0;
+        int force_break = 0;
+        if (c == '\0' || c == '\n') {
+            flush = 1;
+            force_break = (c == '\n');
+        } else if (line_w > 0.0f && line_w + adv > bounds.w) {
+            flush = 1;
+            force_break = 0;
+            i--;
+        }
+
+        if (flush) {
+            line[li] = '\0';
+            if (pen_y + size_px <= bounds.y + bounds.h) {
+                float x = bounds.x;
+                if (align == VG_TEXT_ALIGN_CENTER) {
+                    x = bounds.x + (bounds.w - line_w) * 0.5f;
+                } else if (align == VG_TEXT_ALIGN_RIGHT) {
+                    x = bounds.x + bounds.w - line_w;
+                }
+                vg_result r = vg_draw_text_internal(ctx, line, (vg_vec2){x, pen_y}, size_px, letter_spacing_px, style, vg_lookup_glyph, NULL);
+                if (r != VG_OK) {
+                    return r;
+                }
+            }
+            if (line_w > max_w) {
+                max_w = line_w;
+            }
+            li = 0u;
+            line_w = 0.0f;
+            pen_y += line_h;
+            if (c == '\0') {
+                break;
+            }
+            if (force_break) {
+                continue;
+            }
+        } else if (li + 1u < sizeof(line)) {
+            line[li++] = c;
+            line_w += adv;
+        }
+    }
+
+    if (out_height_px) {
+        *out_height_px = pen_y - bounds.y;
+    }
+    (void)max_w;
     return VG_OK;
 }
 

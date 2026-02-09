@@ -11,6 +11,7 @@ option(VG_BUILD_VK_SDL_EXAMPLE "Build Vulkan + SDL example" ON)
 
 add_library(vg STATIC
     src/vg.c
+    src/vg_ui.c
     src/backends/vulkan/vg_vk.c
     src/fx/vg_fx.c
 )

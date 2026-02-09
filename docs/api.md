@@ -1,6 +1,6 @@
 # API Reference
 
-This document describes the current public API in `include/vg.h`.
+This document describes the current public API in `include/vg.h` and `include/vg_ui.h`.
 
 ## Versioning
 
@@ -41,6 +41,22 @@ Axis-aligned rectangle in pixel space.
 
 - `x`, `y`: top-left corner.
 - `w`, `h`: width/height in pixels.
+
+### `vg_mat2x3`
+
+2D affine transform matrix:
+- row0: `m00 m01 m02`
+- row1: `m10 m11 m12`
+
+Point transform:
+- `x' = m00*x + m01*y + m02`
+- `y' = m10*x + m11*y + m12`
+
+### `vg_text_align`
+
+- `VG_TEXT_ALIGN_LEFT`
+- `VG_TEXT_ALIGN_CENTER`
+- `VG_TEXT_ALIGN_RIGHT`
 
 ### `vg_stroke_style`
 
@@ -172,6 +188,37 @@ Stores and forwards full CRT profile to backend state.
 
 Reads current CRT profile.
 
+## Transform API
+
+### `vg_transform_reset(vg_context* ctx)`
+
+Resets current transform to identity and clears push/pop stack.
+
+### `vg_transform_push(vg_context* ctx)`
+### `vg_transform_pop(vg_context* ctx)`
+
+Saves/restores current transform.
+
+Notes:
+- Stack depth is currently fixed (`32`).
+- `vg_transform_push` returns `VG_ERROR_OUT_OF_MEMORY` on overflow.
+- `vg_transform_pop` returns `VG_ERROR_INVALID_ARGUMENT` on underflow.
+
+### `vg_transform_set(vg_context* ctx, vg_mat2x3 m)`
+### `vg_transform_get(vg_context* ctx)`
+
+Sets/gets current affine transform.
+
+### `vg_transform_translate(vg_context* ctx, float tx, float ty)`
+### `vg_transform_scale(vg_context* ctx, float sx, float sy)`
+### `vg_transform_rotate(vg_context* ctx, float radians)`
+
+Post-multiplies current transform with translate/scale/rotate operations.
+
+Behavior:
+- Applied to all geometry draw calls (`path/polyline/fill/text/ui`) in current frame.
+- Transform resets to identity at each `vg_begin_frame`.
+
 ## Path API
 
 ### `vg_path_create(vg_context* ctx, vg_path** out_path)`
@@ -255,6 +302,14 @@ Notes:
 - Lowercase input is normalized to uppercase.
 - Supports `\n` for multi-line width calculation (returns max line width).
 
+### `vg_measure_text_boxed(const char* text, float size_px, float letter_spacing_px)`
+
+Width measurement for the boxed title variant of the built-in stroke font.
+
+### `vg_measure_text_wrapped(const char* text, float size_px, float letter_spacing_px, float wrap_width_px, size_t* out_line_count)`
+
+Measures wrapped width and optional line count for fixed-width wrapping.
+
 ### `vg_draw_text(vg_context* ctx, const char* text, vg_vec2 origin, float size_px, float letter_spacing_px, const vg_stroke_style* style, float* out_width_px)`
 
 Renders stroke text using the built-in line font.
@@ -268,6 +323,32 @@ Requirements:
 Notes:
 - `origin` is text top-left anchor.
 - `out_width_px` is optional and reports rendered width.
+
+### `vg_draw_text_boxed(vg_context* ctx, const char* text, vg_vec2 origin, float size_px, float letter_spacing_px, const vg_stroke_style* style, float* out_width_px)`
+
+Draws the boxed title variant of the built-in font.
+
+Notes:
+- Intended for headings and status lines.
+- Renders an outlined/block-like pass of each glyph (outer contour + inner cutout + crisp edge).
+
+### `vg_draw_text_boxed_weighted(vg_context* ctx, const char* text, vg_vec2 origin, float size_px, float letter_spacing_px, const vg_stroke_style* style, float weight, float* out_width_px)`
+
+Weighted boxed-outline variant.
+
+Notes:
+- `weight` controls chunkiness of the outline/cutout passes.
+- Values are clamped internally to `[0.25, 3.0]`.
+
+### `vg_draw_text_wrapped(vg_context* ctx, const char* text, vg_rect bounds, float size_px, float letter_spacing_px, vg_text_align align, const vg_stroke_style* style, float* out_height_px)`
+
+Draws wrapped text constrained to a rectangle.
+
+Behavior:
+- Wraps at character boundaries when line width exceeds `bounds.w`.
+- Supports explicit newline breaks.
+- Aligns each line using `VG_TEXT_ALIGN_LEFT|CENTER|RIGHT`.
+- Stops drawing once lines exceed `bounds.h`.
 
 ### `vg_draw_rect(vg_context* ctx, vg_rect rect, const vg_stroke_style* style)`
 
@@ -299,6 +380,29 @@ Requirements:
 - active frame
 - valid rectangle and styles
 - `value_01` is clamped to `[0, 1]`
+
+## UI Helper API (`vg_ui.h`)
+
+### `vg_ui_slider_item`
+
+One row in a slider panel:
+- `label`
+- `value_01`
+- `value_display`
+- `selected`
+
+### `vg_ui_slider_panel_desc`
+
+Panel-level descriptor:
+- panel `rect`
+- optional `title_line_0`, `title_line_1`, `footer_line`
+- `items` + `item_count`
+- sizing: `row_height_px`, `label_size_px`, `value_size_px`
+- styles: `border_style`, `text_style`, `track_style`, `knob_style`
+
+### `vg_ui_draw_slider_panel(vg_context* ctx, const vg_ui_slider_panel_desc* desc)`
+
+Draws a reusable immediate-mode style debug panel with labeled sliders and value readouts.
 
 ## Debug Raster API
 
@@ -344,7 +448,6 @@ If this path is unavailable, app can still bind its own graphics pipeline before
 ## Known Limitations
 
 - API/ABI not stabilized yet.
-- No fills yet; stroke-focused path.
 - Curve flattening is fixed-step, not adaptive.
 - GPU upload currently uses host-visible memory; no staging+device-local path yet.
 - No internal swapchain or render pass management; app owns frame orchestration.

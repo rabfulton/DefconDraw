@@ -1,4 +1,5 @@
 #include "vg.h"
+#include "vg_ui.h"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
@@ -117,6 +118,12 @@ typedef struct app {
 
     SDL_AudioDeviceID audio_dev;
     int audio_ready;
+
+    vg_crt_profile crt_profile;
+    int crt_profile_valid;
+    char profile_path[512];
+    float boxed_font_weight;
+    int force_clear_frames;
 } app;
 
 enum {
@@ -133,15 +140,14 @@ enum {
     UI_PARAM_SCANLINE = 10,
     UI_PARAM_NOISE = 11,
     UI_PARAM_LINE_WIDTH = 12,
-    UI_PARAM_COUNT = 13
+    UI_PARAM_BOX_WEIGHT = 13,
+    UI_PARAM_COUNT = 14
 };
 
 static const float k_ui_x = 24.0f;
 static const float k_ui_y = 24.0f;
 static const float k_ui_w = 560.0f;
 static const float k_ui_row_step = 40.0f;
-static const float k_ui_rows_top = 70.0f;
-static const float k_ui_footer_h = 56.0f;
 static const float k_ui_h = 70.0f + (float)UI_PARAM_COUNT * 40.0f + 56.0f;
 
 enum {
@@ -151,7 +157,8 @@ enum {
     SCENE_SURFACE_PLOT = 3,
     SCENE_SYNTHWAVE = 4,
     SCENE_FILL_PRIMS = 5,
-    SCENE_COUNT = 6
+    SCENE_TITLE_CRAWL = 6,
+    SCENE_COUNT = 7
 };
 
 static int check_vk(VkResult res, const char* what) {
@@ -244,7 +251,8 @@ static void set_scene(app* a, int mode) {
         "STATUS READY\nMODE 3 STARFIELD\nDEPTH MOTION + STREAK TEST",
         "STATUS READY\nMODE 4 SURFACE PLOT\n3D FUNCTION GRID TEST",
         "STATUS READY\nMODE 5 SYNTH TERRAIN\nHORIZON + PARALLAX TEST",
-        "STATUS READY\nMODE 6 FILL PRIMITIVES\nCONVEX + RECT + CIRCLE TEST"
+        "STATUS READY\nMODE 6 FILL PRIMITIVES\nCONVEX + RECT + CIRCLE TEST",
+        "STATUS READY\nMODE 7 TITLE CRAWL\nBOXED FONT + ROTARY TEST"
     };
     if (mode < 0 || mode >= SCENE_COUNT) {
         return;
@@ -278,6 +286,114 @@ static void init_starfield(app* a) {
         a->stars[i].z = 0.2f + (float)i / (float)(sizeof(a->stars) / sizeof(a->stars[0])) * 1.8f;
     }
     a->stars_initialized = 1;
+}
+
+static void clamp_crt_profile(vg_crt_profile* crt) {
+    crt->bloom_strength = clampf(crt->bloom_strength, 0.0f, 3.0f);
+    crt->bloom_radius_px = clampf(crt->bloom_radius_px, 0.0f, 14.0f);
+    crt->persistence_decay = clampf(crt->persistence_decay, 0.70f, 0.985f);
+    crt->jitter_amount = clampf(crt->jitter_amount, 0.0f, 1.5f);
+    crt->flicker_amount = clampf(crt->flicker_amount, 0.0f, 1.0f);
+    crt->beam_core_width_px = clampf(crt->beam_core_width_px, 0.5f, 3.5f);
+    crt->beam_halo_width_px = clampf(crt->beam_halo_width_px, 0.0f, 10.0f);
+    crt->beam_intensity = clampf(crt->beam_intensity, 0.2f, 3.0f);
+    crt->vignette_strength = clampf(crt->vignette_strength, 0.0f, 1.0f);
+    crt->barrel_distortion = clampf(crt->barrel_distortion, 0.0f, 0.30f);
+    crt->scanline_strength = clampf(crt->scanline_strength, 0.0f, 1.0f);
+    crt->noise_strength = clampf(crt->noise_strength, 0.0f, 0.30f);
+}
+
+static void init_profile_path(app* a) {
+    const char* fallback = "./vg_demo_vk_profile.cfg";
+    snprintf(a->profile_path, sizeof(a->profile_path), "%s", fallback);
+    char* pref = SDL_GetPrefPath("vectorgfx", "vk_demo");
+    if (pref && pref[0] != '\0') {
+        snprintf(a->profile_path, sizeof(a->profile_path), "%svg_demo_vk_profile.cfg", pref);
+    }
+    if (pref) {
+        SDL_free(pref);
+    }
+}
+
+static int save_profile(const app* a) {
+    FILE* f = fopen(a->profile_path, "wb");
+    if (!f) {
+        fprintf(stderr, "profile save failed: %s\n", a->profile_path);
+        return 0;
+    }
+    fprintf(f, "line_width=%.6f\n", a->main_line_width);
+    fprintf(f, "box_weight=%.6f\n", a->boxed_font_weight);
+    fprintf(f, "scene_mode=%d\n", a->scene_mode);
+    fprintf(f, "show_ui=%d\n", a->show_ui);
+    fprintf(f, "beam_core_width_px=%.6f\n", a->crt_profile.beam_core_width_px);
+    fprintf(f, "beam_halo_width_px=%.6f\n", a->crt_profile.beam_halo_width_px);
+    fprintf(f, "beam_intensity=%.6f\n", a->crt_profile.beam_intensity);
+    fprintf(f, "bloom_strength=%.6f\n", a->crt_profile.bloom_strength);
+    fprintf(f, "bloom_radius_px=%.6f\n", a->crt_profile.bloom_radius_px);
+    fprintf(f, "persistence_decay=%.6f\n", a->crt_profile.persistence_decay);
+    fprintf(f, "jitter_amount=%.6f\n", a->crt_profile.jitter_amount);
+    fprintf(f, "flicker_amount=%.6f\n", a->crt_profile.flicker_amount);
+    fprintf(f, "vignette_strength=%.6f\n", a->crt_profile.vignette_strength);
+    fprintf(f, "barrel_distortion=%.6f\n", a->crt_profile.barrel_distortion);
+    fprintf(f, "scanline_strength=%.6f\n", a->crt_profile.scanline_strength);
+    fprintf(f, "noise_strength=%.6f\n", a->crt_profile.noise_strength);
+    fclose(f);
+    fprintf(stderr, "profile saved: %s\n", a->profile_path);
+    return 1;
+}
+
+static int load_profile(app* a) {
+    FILE* f = fopen(a->profile_path, "rb");
+    if (!f) {
+        fprintf(stderr, "profile load skipped (missing): %s\n", a->profile_path);
+        return 0;
+    }
+    vg_crt_profile crt = a->crt_profile;
+    float line_width = a->main_line_width;
+    float box_weight = a->boxed_font_weight;
+    int scene_mode = a->scene_mode;
+    int show_ui = a->show_ui;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        char key[64];
+        float val = 0.0f;
+        if (sscanf(line, " %63[^=]=%f", key, &val) != 2) {
+            continue;
+        }
+        if (strcmp(key, "line_width") == 0) line_width = val;
+        else if (strcmp(key, "box_weight") == 0) box_weight = val;
+        else if (strcmp(key, "scene_mode") == 0) scene_mode = (int)val;
+        else if (strcmp(key, "show_ui") == 0) show_ui = (int)val;
+        else if (strcmp(key, "beam_core_width_px") == 0) crt.beam_core_width_px = val;
+        else if (strcmp(key, "beam_halo_width_px") == 0) crt.beam_halo_width_px = val;
+        else if (strcmp(key, "beam_intensity") == 0) crt.beam_intensity = val;
+        else if (strcmp(key, "bloom_strength") == 0) crt.bloom_strength = val;
+        else if (strcmp(key, "bloom_radius_px") == 0) crt.bloom_radius_px = val;
+        else if (strcmp(key, "persistence_decay") == 0) crt.persistence_decay = val;
+        else if (strcmp(key, "jitter_amount") == 0) crt.jitter_amount = val;
+        else if (strcmp(key, "flicker_amount") == 0) crt.flicker_amount = val;
+        else if (strcmp(key, "vignette_strength") == 0) crt.vignette_strength = val;
+        else if (strcmp(key, "barrel_distortion") == 0) crt.barrel_distortion = val;
+        else if (strcmp(key, "scanline_strength") == 0) crt.scanline_strength = val;
+        else if (strcmp(key, "noise_strength") == 0) crt.noise_strength = val;
+    }
+    fclose(f);
+
+    clamp_crt_profile(&crt);
+    a->crt_profile = crt;
+    a->crt_profile_valid = 1;
+    a->main_line_width = clampf(line_width, 1.0f, 16.0f);
+    a->boxed_font_weight = clampf(box_weight, 0.25f, 3.0f);
+    a->show_ui = show_ui ? 1 : 0;
+    if (scene_mode < 0 || scene_mode >= SCENE_COUNT) {
+        scene_mode = SCENE_CLASSIC;
+    }
+    set_scene(a, scene_mode);
+    if (a->vg) {
+        vg_set_crt_profile(a->vg, &a->crt_profile);
+    }
+    fprintf(stderr, "profile loaded: %s\n", a->profile_path);
+    return 1;
 }
 
 static void update_teletype(app* a, float dt) {
@@ -1250,13 +1366,20 @@ static int create_vg_context(app* a) {
     }
 
     vg_crt_profile crt = {0};
-    vg_make_crt_profile(VG_CRT_PRESET_WOPR, &crt);
-    crt.bloom_strength = 0.75f;
-    crt.bloom_radius_px = 4.0f;
-    crt.persistence_decay = 0.92f;
-    crt.jitter_amount = 0.15f;
-    crt.flicker_amount = 0.1f;
+    if (a->crt_profile_valid) {
+        crt = a->crt_profile;
+    } else {
+        vg_make_crt_profile(VG_CRT_PRESET_WOPR, &crt);
+        crt.bloom_strength = 0.75f;
+        crt.bloom_radius_px = 4.0f;
+        crt.persistence_decay = 0.92f;
+        crt.jitter_amount = 0.15f;
+        crt.flicker_amount = 0.1f;
+    }
+    clamp_crt_profile(&crt);
     vg_set_crt_profile(a->vg, &crt);
+    a->crt_profile = crt;
+    a->crt_profile_valid = 1;
     return 1;
 }
 
@@ -1384,6 +1507,7 @@ static int create_swapchain_resources(app* a) {
         !create_vg_context(a)) {
         return 0;
     }
+    a->force_clear_frames = 3;
     return 1;
 }
 
@@ -1410,8 +1534,10 @@ static void set_viewport_scissor(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
 }
 
 static void apply_selected_tweak(app* a, int dir) {
-    vg_crt_profile crt;
-    vg_get_crt_profile(a->vg, &crt);
+    vg_crt_profile crt = a->crt_profile_valid ? a->crt_profile : (vg_crt_profile){0};
+    if (!a->crt_profile_valid) {
+        vg_get_crt_profile(a->vg, &crt);
+    }
 
     switch (a->selected_param) {
         case UI_PARAM_BLOOM_STRENGTH:
@@ -1453,10 +1579,16 @@ static void apply_selected_tweak(app* a, int dir) {
         case UI_PARAM_LINE_WIDTH:
             a->main_line_width = clampf(a->main_line_width + 0.25f * (float)dir, 1.0f, 16.0f);
             break;
+        case UI_PARAM_BOX_WEIGHT:
+            a->boxed_font_weight = clampf(a->boxed_font_weight + 0.06f * (float)dir, 0.25f, 3.0f);
+            break;
         default:
             break;
     }
+    clamp_crt_profile(&crt);
     vg_set_crt_profile(a->vg, &crt);
+    a->crt_profile = crt;
+    a->crt_profile_valid = 1;
 }
 
 static void step_selected_param(app* a, int dir) {
@@ -1508,51 +1640,19 @@ static void handle_ui_hold(app* a, float dt) {
 static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
     vg_stroke_style panel = {
         .width_px = 2.0f,
-        .intensity = 0.65f,
-        .color = {0.15f, 0.95f, 0.35f, 0.80f},
+        .intensity = 0.78f,
+        .color = {0.87f, 0.38f, 0.08f, 0.92f},
         .cap = VG_LINE_CAP_BUTT,
         .join = VG_LINE_JOIN_BEVEL,
         .miter_limit = 2.0f,
         .blend = VG_BLEND_ALPHA
     };
     vg_stroke_style text = panel;
-    text.width_px = 1.6f;
-    text.intensity = 0.95f;
+    text.width_px = 1.7f;
+    text.intensity = 1.05f;
     text.cap = VG_LINE_CAP_ROUND;
     text.join = VG_LINE_JOIN_ROUND;
     text.blend = VG_BLEND_ALPHA;
-
-    vg_rect ui_rect = {k_ui_x, k_ui_y, k_ui_w, k_ui_h};
-    vg_result r = vg_draw_rect(a->vg, ui_rect, &panel);
-    if (r != VG_OK) {
-        return r;
-    }
-
-    char line[96];
-    r = vg_draw_text(
-        a->vg,
-        "TAB UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
-        (vg_vec2){k_ui_x + 16.0f, k_ui_y + 14.0f},
-        11.0f,
-        0.8f,
-        &text,
-        NULL
-    );
-    if (r != VG_OK) {
-        return r;
-    }
-    r = vg_draw_text(
-        a->vg,
-        "1..6 SCENE  R REPLAY TTY",
-        (vg_vec2){k_ui_x + 16.0f, k_ui_y + 31.0f},
-        10.0f,
-        0.8f,
-        &text,
-        NULL
-    );
-    if (r != VG_OK) {
-        return r;
-    }
 
     static const char* labels[UI_PARAM_COUNT] = {
         "BLOOM STR",
@@ -1567,7 +1667,8 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
         "BARREL DISTORT",
         "SCANLINE",
         "NOISE",
-        "LINE WIDTH PX"
+        "LINE WIDTH PX",
+        "BOX WEIGHT"
     };
     float values[UI_PARAM_COUNT] = {
         crt->bloom_strength,
@@ -1582,7 +1683,8 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
         crt->barrel_distortion,
         crt->scanline_strength,
         crt->noise_strength,
-        a->main_line_width
+        a->main_line_width,
+        a->boxed_font_weight
     };
     float values_norm[UI_PARAM_COUNT] = {
         norm_range(crt->bloom_strength, 0.0f, 3.0f),
@@ -1597,32 +1699,34 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
         norm_range(crt->barrel_distortion, 0.0f, 0.30f),
         norm_range(crt->scanline_strength, 0.0f, 1.0f),
         norm_range(crt->noise_strength, 0.0f, 0.30f),
-        norm_range(a->main_line_width, 1.0f, 16.0f)
+        norm_range(a->main_line_width, 1.0f, 16.0f),
+        norm_range(a->boxed_font_weight, 0.25f, 3.0f)
     };
-
+    vg_ui_slider_item items[UI_PARAM_COUNT];
     for (int i = 0; i < UI_PARAM_COUNT; ++i) {
-        float row_y = k_ui_y + k_ui_rows_top + (float)i * k_ui_row_step;
-        vg_rect button = {k_ui_x + 16.0f, row_y, 222.0f, 30.0f};
-        r = vg_draw_button(a->vg, button, labels[i], 13.0f, &panel, &text, i == a->selected_param);
-        if (r != VG_OK) {
-            return r;
-        }
-
-        vg_rect slider = {k_ui_x + 254.0f, row_y + 2.0f, 230.0f, 26.0f};
-        r = vg_draw_slider(a->vg, slider, values_norm[i], &panel, &text, &text);
-        if (r != VG_OK) {
-            return r;
-        }
-
-        snprintf(line, sizeof(line), "%.3f", values[i]);
-        r = vg_draw_text(a->vg, line, (vg_vec2){k_ui_x + 492.0f, row_y + 8.0f}, 11.5f, 0.8f, &text, NULL);
-        if (r != VG_OK) {
-            return r;
-        }
+        items[i].label = labels[i];
+        items[i].value_01 = values_norm[i];
+        items[i].value_display = values[i];
+        items[i].selected = (i == a->selected_param);
     }
-
-    snprintf(line, sizeof(line), "FPS %.1f", fps);
-    return vg_draw_text(a->vg, line, (vg_vec2){k_ui_x + 16.0f, k_ui_y + k_ui_h - 26.0f}, 18.0f, 1.0f, &text, NULL);
+    char footer[64];
+    snprintf(footer, sizeof(footer), "FPS %.1f", fps);
+    vg_ui_slider_panel_desc ui = {
+        .rect = {k_ui_x, k_ui_y, k_ui_w, k_ui_h},
+        .title_line_0 = "TAB UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
+        .title_line_1 = "1..7 SCENE  R REPLAY TTY  F5 SAVE  F9 LOAD",
+        .footer_line = footer,
+        .items = items,
+        .item_count = UI_PARAM_COUNT,
+        .row_height_px = k_ui_row_step,
+        .label_size_px = 11.0f,
+        .value_size_px = 11.5f,
+        .border_style = panel,
+        .text_style = text,
+        .track_style = text,
+        .knob_style = text
+    };
+    return vg_ui_draw_slider_panel(a->vg, &ui);
 }
 
 static vg_result draw_scene_classic(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float cx, float cy, float jx, float jy) {
@@ -1829,7 +1933,99 @@ static vg_result draw_scene_fill_prims(app* a, float t, float w, float h) {
         if (vr != VG_OK) return vr;
     }
 
+    vg_result tr = vg_transform_push(a->vg);
+    if (tr != VG_OK) {
+        return tr;
+    }
+    vg_transform_translate(a->vg, w * 0.78f, h * 0.70f);
+    vg_transform_rotate(a->vg, t * 0.95f);
+    vg_transform_scale(a->vg, 1.25f, 0.90f);
+    vr = vg_fill_rect(a->vg, (vg_rect){-48.0f, -24.0f, 96.0f, 48.0f}, &cool_fill);
+    if (vr != VG_OK) {
+        (void)vg_transform_pop(a->vg);
+        return vr;
+    }
+    vr = vg_draw_rect(a->vg, (vg_rect){-48.0f, -24.0f, 96.0f, 48.0f}, &edge);
+    if (vr != VG_OK) {
+        (void)vg_transform_pop(a->vg);
+        return vr;
+    }
+    tr = vg_transform_pop(a->vg);
+    if (tr != VG_OK) {
+        return tr;
+    }
+
     return VG_OK;
+}
+
+static vg_result draw_scene_title_crawl(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h) {
+    vg_result vr;
+    vg_stroke_style title_s = *main_s;
+    title_s.width_px = main_s->width_px * 0.85f;
+    title_s.intensity = main_s->intensity * 1.20f;
+    title_s.blend = VG_BLEND_ADDITIVE;
+
+    const char* title = "VECTOR WARS";
+    float title_w = vg_measure_text_boxed(title, 52.0f, 4.0f);
+    vr = vg_draw_text_boxed_weighted(a->vg, title, (vg_vec2){(w - title_w) * 0.5f, h * 0.83f}, 52.0f, 4.0f, &title_s, a->boxed_font_weight, NULL);
+    if (vr != VG_OK) return vr;
+
+    const char* rot = "RETRO";
+    float rot_w = vg_measure_text_boxed(rot, 26.0f, 2.0f);
+    float rot_h = 26.0f * 1.35f;
+    vr = vg_transform_push(a->vg);
+    if (vr != VG_OK) return vr;
+    vg_transform_translate(a->vg, w * 0.5f, h * 0.66f);
+    vg_transform_rotate(a->vg, t * 1.65f);
+    vr = vg_draw_text_boxed_weighted(a->vg, rot, (vg_vec2){-rot_w * 0.5f, -rot_h * 0.5f}, 26.0f, 2.0f, &title_s, a->boxed_font_weight, NULL);
+    if (vr != VG_OK) {
+        (void)vg_transform_pop(a->vg);
+        return vr;
+    }
+    vr = vg_transform_pop(a->vg);
+    if (vr != VG_OK) return vr;
+
+    static const char* crawl_lines[] = {
+        "EPISODE VII",
+        "THE VECTOR AWAKENS",
+        "A SMALL GRAPHICS LIBRARY",
+        "HAS EMBRACED VULKAN",
+        "TO RECREATE GLOWING",
+        "RETRO DISPLAY MAGIC.",
+        "BLOOM SCANLINES AND",
+        "PERSISTENCE FLICKER",
+        "NOW POWER NEW DEMOS",
+        "FOR GAMES AND UI."
+    };
+    const size_t crawl_count = sizeof(crawl_lines) / sizeof(crawl_lines[0]);
+    float phase = fmodf(t * 0.12f, 1.0f);
+    float y_base = h * 0.20f;
+    float y_span = h * 0.38f;
+
+    for (size_t i = 0; i < crawl_count; ++i) {
+        float u = ((float)i + phase * (float)crawl_count) / (float)crawl_count;
+        if (u > 1.0f) {
+            u -= 1.0f;
+        }
+        float y = y_base + y_span * u * u;
+        float size = 24.0f * (1.0f - u) + 10.0f * u;
+        float tracking = 1.2f * (1.0f - u) + 0.55f * u;
+        float line_w = vg_measure_text_boxed(crawl_lines[i], size, tracking);
+        float center_x = w * 0.5f + (u - 0.5f) * 20.0f;
+        vg_stroke_style crawl_s = *main_s;
+        crawl_s.width_px = main_s->width_px * (0.80f - 0.32f * u);
+        if (crawl_s.width_px < 0.9f) crawl_s.width_px = 0.9f;
+        crawl_s.intensity = main_s->intensity * (1.12f - 0.36f * u);
+        crawl_s.blend = VG_BLEND_ADDITIVE;
+
+        vr = vg_draw_text_boxed_weighted(a->vg, crawl_lines[i], (vg_vec2){center_x - line_w * 0.5f, y}, size, tracking, &crawl_s, a->boxed_font_weight, NULL);
+        if (vr != VG_OK) return vr;
+    }
+
+    vg_vec2 beam[2] = {{w * 0.18f, h * 0.64f}, {w * 0.82f, h * 0.64f}};
+    vr = vg_draw_polyline(a->vg, beam, 2, halo_s, 0);
+    if (vr != VG_OK) return vr;
+    return vg_draw_polyline(a->vg, beam, 2, main_s, 0);
 }
 
 static vg_result draw_scene_mode(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float dt, float w, float h, float cx, float cy, float jx, float jy) {
@@ -1844,6 +2040,8 @@ static vg_result draw_scene_mode(app* a, const vg_stroke_style* halo_s, const vg
             return draw_scene_synthwave(a, halo_s, main_s, t, w, h);
         case SCENE_FILL_PRIMS:
             return draw_scene_fill_prims(a, t, w, h);
+        case SCENE_TITLE_CRAWL:
+            return draw_scene_title_crawl(a, halo_s, main_s, t, w, h);
         case SCENE_CLASSIC:
         default:
             return draw_scene_classic(a, halo_s, main_s, t, cx, cy, jx, jy);
@@ -1887,7 +2085,12 @@ static vg_result draw_teletype_overlay(app* a, float w, float h) {
         char c = buf[i];
         if (c == '\n' || c == '\0') {
             line[li] = '\0';
-            vg_result r = vg_draw_text(a->vg, line, (vg_vec2){x0, y0 - lh * (float)row}, 13.0f, 0.8f, &tty, NULL);
+            vg_result r;
+            if (row == 0) {
+                r = vg_draw_text_boxed_weighted(a->vg, line, (vg_vec2){x0, y0 - lh * (float)row}, 13.0f, 0.8f, &tty, a->boxed_font_weight, NULL);
+            } else {
+                r = vg_draw_text(a->vg, line, (vg_vec2){x0, y0 - lh * (float)row}, 13.0f, 0.8f, &tty, NULL);
+            }
             if (r != VG_OK) {
                 return r;
             }
@@ -1952,6 +2155,10 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     float fade_alpha = 1.0f - frame_decay;
     if (fade_alpha < 0.025f) {
         fade_alpha = 0.025f;
+    }
+    if (a->force_clear_frames > 0) {
+        fade_alpha = 1.0f;
+        a->force_clear_frames--;
     }
 
     float flicker_n = rand_signed((uint32_t)(t * 1000.0f));
@@ -2171,6 +2378,7 @@ int main(void) {
     a.show_ui = 1;
     a.selected_param = 0;
     a.main_line_width = 4.5f;
+    a.boxed_font_weight = 1.0f;
     a.tty_char_dt = 0.050f;
     set_scene(&a, SCENE_CLASSIC);
 
@@ -2178,6 +2386,7 @@ int main(void) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+    init_profile_path(&a);
     init_teletype_audio(&a);
 
     a.window = SDL_CreateWindow(
@@ -2203,6 +2412,7 @@ int main(void) {
         cleanup(&a);
         return 1;
     }
+    load_profile(&a);
 
     int running = 1;
     int need_recreate = 0;
@@ -2233,6 +2443,12 @@ int main(void) {
                     set_scene(&a, SCENE_SYNTHWAVE);
                 } else if (ev.key.keysym.sym == SDLK_6) {
                     set_scene(&a, SCENE_FILL_PRIMS);
+                } else if (ev.key.keysym.sym == SDLK_7) {
+                    set_scene(&a, SCENE_TITLE_CRAWL);
+                } else if (ev.key.keysym.sym == SDLK_F5) {
+                    save_profile(&a);
+                } else if (ev.key.keysym.sym == SDLK_F9) {
+                    load_profile(&a);
                 } else if (ev.key.keysym.sym == SDLK_r) {
                     reset_teletype(&a);
                 }
