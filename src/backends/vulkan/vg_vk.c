@@ -120,6 +120,19 @@ static int vg_vk_reserve_draws(vg_vk_backend* backend, uint32_t extra) {
     return 1;
 }
 
+static int vg_vk_style_equal(const vg_stroke_style* a, const vg_stroke_style* b) {
+    return a->width_px == b->width_px &&
+           a->intensity == b->intensity &&
+           a->color.r == b->color.r &&
+           a->color.g == b->color.g &&
+           a->color.b == b->color.b &&
+           a->color.a == b->color.a &&
+           a->cap == b->cap &&
+           a->join == b->join &&
+           a->miter_limit == b->miter_limit &&
+           a->blend == b->blend;
+}
+
 #if VG_HAS_VULKAN
 static uint32_t vg_vk_find_memory_type(
     const VkPhysicalDeviceMemoryProperties* props,
@@ -554,8 +567,16 @@ static vg_result vg_vk_draw_polyline_impl(
     if (!vg_vk_reserve_draws(backend, 1u)) {
         return VG_ERROR_OUT_OF_MEMORY;
     }
+    uint32_t new_count = backend->stroke_vertex_count - first_vertex;
+    if (backend->draw_count > 0u) {
+        vg_vk_draw_cmd* prev = &backend->draws[backend->draw_count - 1u];
+        if (prev->first_vertex + prev->vertex_count == first_vertex && vg_vk_style_equal(&prev->style, style)) {
+            prev->vertex_count += new_count;
+            return VG_OK;
+        }
+    }
     backend->draws[backend->draw_count].first_vertex = first_vertex;
-    backend->draws[backend->draw_count].vertex_count = backend->stroke_vertex_count - first_vertex;
+    backend->draws[backend->draw_count].vertex_count = new_count;
     backend->draws[backend->draw_count].style = *style;
     backend->draw_count++;
 

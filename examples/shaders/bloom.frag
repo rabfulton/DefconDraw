@@ -8,6 +8,11 @@ layout(push_constant) uniform PostPC {
     vec2 texel;
     float bloom_strength;
     float bloom_radius_px;
+    float vignette_strength;
+    float barrel_distortion;
+    float scanline_strength;
+    float noise_strength;
+    float time_s;
 } pc;
 
 void main() {

@@ -323,7 +323,7 @@ If this path is unavailable, app can still bind its own graphics pipeline before
 - Persistence in Vulkan output is app-driven (see `examples/demo_vk_sdl.c` for a render-pass `LOAD` + fullscreen fade pattern).
 - Demo bloom in Vulkan example uses a post-process composite path (offscreen scene target + bloom target + fullscreen composite).
 - Built-in text uses an embedded stroke font table; loading `.ttf` line fonts is not implemented yet.
-- Vulkan backend currently batches by blend mode when submitting recorded draws (alpha pass, then additive pass) to reduce pipeline churn.
+- Vulkan backend batches by blend mode when submitting recorded draws (alpha pass, then additive pass) and merges contiguous compatible draw commands.
 
 ## Quick Usage Skeleton
 

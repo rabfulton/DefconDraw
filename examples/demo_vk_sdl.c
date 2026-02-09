@@ -28,6 +28,11 @@ typedef struct post_pc {
     float texel[2];
     float bloom_strength;
     float bloom_radius_px;
+    float vignette_strength;
+    float barrel_distortion;
+    float scanline_strength;
+    float noise_strength;
+    float time_s;
 } post_pc;
 
 typedef enum frame_result {
@@ -106,8 +111,15 @@ enum {
     UI_PARAM_PERSISTENCE = 2,
     UI_PARAM_JITTER = 3,
     UI_PARAM_FLICKER = 4,
-    UI_PARAM_LINE_WIDTH = 5,
-    UI_PARAM_COUNT = 6
+    UI_PARAM_BEAM_CORE = 5,
+    UI_PARAM_BEAM_HALO = 6,
+    UI_PARAM_BEAM_INTENSITY = 7,
+    UI_PARAM_VIGNETTE = 8,
+    UI_PARAM_BARREL = 9,
+    UI_PARAM_SCANLINE = 10,
+    UI_PARAM_NOISE = 11,
+    UI_PARAM_LINE_WIDTH = 12,
+    UI_PARAM_COUNT = 13
 };
 
 static int check_vk(VkResult res, const char* what) {
@@ -1262,24 +1274,45 @@ static void set_viewport_scissor(VkCommandBuffer cmd, uint32_t w, uint32_t h) {
 }
 
 static void apply_selected_tweak(app* a, int dir) {
-    vg_retro_params retro;
-    vg_get_retro_params(a->vg, &retro);
+    vg_crt_profile crt;
+    vg_get_crt_profile(a->vg, &crt);
 
     switch (a->selected_param) {
         case UI_PARAM_BLOOM_STRENGTH:
-            retro.bloom_strength = clampf(retro.bloom_strength + 0.05f * (float)dir, 0.0f, 3.0f);
+            crt.bloom_strength = clampf(crt.bloom_strength + 0.05f * (float)dir, 0.0f, 3.0f);
             break;
         case UI_PARAM_BLOOM_RADIUS:
-            retro.bloom_radius_px = clampf(retro.bloom_radius_px + 0.35f * (float)dir, 0.0f, 14.0f);
+            crt.bloom_radius_px = clampf(crt.bloom_radius_px + 0.35f * (float)dir, 0.0f, 14.0f);
             break;
         case UI_PARAM_PERSISTENCE:
-            retro.persistence_decay = clampf(retro.persistence_decay + 0.005f * (float)dir, 0.70f, 0.985f);
+            crt.persistence_decay = clampf(crt.persistence_decay + 0.005f * (float)dir, 0.70f, 0.985f);
             break;
         case UI_PARAM_JITTER:
-            retro.jitter_amount = clampf(retro.jitter_amount + 0.02f * (float)dir, 0.0f, 1.5f);
+            crt.jitter_amount = clampf(crt.jitter_amount + 0.02f * (float)dir, 0.0f, 1.5f);
             break;
         case UI_PARAM_FLICKER:
-            retro.flicker_amount = clampf(retro.flicker_amount + 0.02f * (float)dir, 0.0f, 1.0f);
+            crt.flicker_amount = clampf(crt.flicker_amount + 0.02f * (float)dir, 0.0f, 1.0f);
+            break;
+        case UI_PARAM_BEAM_CORE:
+            crt.beam_core_width_px = clampf(crt.beam_core_width_px + 0.05f * (float)dir, 0.5f, 3.5f);
+            break;
+        case UI_PARAM_BEAM_HALO:
+            crt.beam_halo_width_px = clampf(crt.beam_halo_width_px + 0.12f * (float)dir, 0.0f, 10.0f);
+            break;
+        case UI_PARAM_BEAM_INTENSITY:
+            crt.beam_intensity = clampf(crt.beam_intensity + 0.05f * (float)dir, 0.2f, 3.0f);
+            break;
+        case UI_PARAM_VIGNETTE:
+            crt.vignette_strength = clampf(crt.vignette_strength + 0.02f * (float)dir, 0.0f, 1.0f);
+            break;
+        case UI_PARAM_BARREL:
+            crt.barrel_distortion = clampf(crt.barrel_distortion + 0.01f * (float)dir, 0.0f, 0.30f);
+            break;
+        case UI_PARAM_SCANLINE:
+            crt.scanline_strength = clampf(crt.scanline_strength + 0.02f * (float)dir, 0.0f, 1.0f);
+            break;
+        case UI_PARAM_NOISE:
+            crt.noise_strength = clampf(crt.noise_strength + 0.01f * (float)dir, 0.0f, 0.30f);
             break;
         case UI_PARAM_LINE_WIDTH:
             a->main_line_width = clampf(a->main_line_width + 0.25f * (float)dir, 1.0f, 16.0f);
@@ -1287,7 +1320,7 @@ static void apply_selected_tweak(app* a, int dir) {
         default:
             break;
     }
-    vg_set_retro_params(a->vg, &retro);
+    vg_set_crt_profile(a->vg, &crt);
 }
 
 static void step_selected_param(app* a, int dir) {
@@ -1336,7 +1369,15 @@ static void handle_ui_hold(app* a, float dt) {
     a->prev_nav_dir = nav_dir;
 }
 
-static vg_result draw_debug_ui(app* a, const vg_retro_params* retro, float fps) {
+static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
+    const float ui_x = 24.0f;
+    const float ui_y = 24.0f;
+    const float ui_w = 560.0f;
+    const float row_step = 40.0f;
+    const float rows_top = 70.0f;
+    const float footer_h = 56.0f;
+    const float ui_h = rows_top + (float)UI_PARAM_COUNT * row_step + footer_h;
+
     vg_stroke_style panel = {
         .width_px = 2.0f,
         .intensity = 0.65f,
@@ -1348,20 +1389,27 @@ static vg_result draw_debug_ui(app* a, const vg_retro_params* retro, float fps) 
     };
     vg_stroke_style text = panel;
     text.width_px = 1.6f;
-    text.intensity = 1.15f;
+    text.intensity = 0.95f;
     text.cap = VG_LINE_CAP_ROUND;
     text.join = VG_LINE_JOIN_ROUND;
-    text.blend = VG_BLEND_ADDITIVE;
+    text.blend = VG_BLEND_ALPHA;
 
-    vg_rect ui_rect = {24.0f, 24.0f, 560.0f, 332.0f};
+    vg_rect ui_rect = {ui_x, ui_y, ui_w, ui_h};
     vg_result r = vg_draw_rect(a->vg, ui_rect, &panel);
     if (r != VG_OK) {
         return r;
     }
 
     char line[96];
-    snprintf(line, sizeof(line), "FPS %.1f", fps);
-    r = vg_draw_text(a->vg, line, (vg_vec2){40.0f, 38.0f}, 20.0f, 1.2f, &text, NULL);
+    r = vg_draw_text(
+        a->vg,
+        "TAB UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
+        (vg_vec2){ui_x + 16.0f, ui_y + 14.0f},
+        11.0f,
+        0.8f,
+        &text,
+        NULL
+    );
     if (r != VG_OK) {
         return r;
     }
@@ -1372,55 +1420,69 @@ static vg_result draw_debug_ui(app* a, const vg_retro_params* retro, float fps) 
         "PERSISTENCE",
         "JITTER",
         "FLICKER",
+        "BEAM CORE",
+        "BEAM HALO",
+        "BEAM INTENSITY",
+        "VIGNETTE",
+        "BARREL DISTORT",
+        "SCANLINE",
+        "NOISE",
         "LINE WIDTH PX"
     };
     float values[UI_PARAM_COUNT] = {
-        retro->bloom_strength,
-        retro->bloom_radius_px,
-        retro->persistence_decay,
-        retro->jitter_amount,
-        retro->flicker_amount,
+        crt->bloom_strength,
+        crt->bloom_radius_px,
+        crt->persistence_decay,
+        crt->jitter_amount,
+        crt->flicker_amount,
+        crt->beam_core_width_px,
+        crt->beam_halo_width_px,
+        crt->beam_intensity,
+        crt->vignette_strength,
+        crt->barrel_distortion,
+        crt->scanline_strength,
+        crt->noise_strength,
         a->main_line_width
     };
     float values_norm[UI_PARAM_COUNT] = {
-        norm_range(retro->bloom_strength, 0.0f, 3.0f),
-        norm_range(retro->bloom_radius_px, 0.0f, 14.0f),
-        norm_range(retro->persistence_decay, 0.70f, 0.985f),
-        norm_range(retro->jitter_amount, 0.0f, 1.5f),
-        norm_range(retro->flicker_amount, 0.0f, 1.0f),
+        norm_range(crt->bloom_strength, 0.0f, 3.0f),
+        norm_range(crt->bloom_radius_px, 0.0f, 14.0f),
+        norm_range(crt->persistence_decay, 0.70f, 0.985f),
+        norm_range(crt->jitter_amount, 0.0f, 1.5f),
+        norm_range(crt->flicker_amount, 0.0f, 1.0f),
+        norm_range(crt->beam_core_width_px, 0.5f, 3.5f),
+        norm_range(crt->beam_halo_width_px, 0.0f, 10.0f),
+        norm_range(crt->beam_intensity, 0.2f, 3.0f),
+        norm_range(crt->vignette_strength, 0.0f, 1.0f),
+        norm_range(crt->barrel_distortion, 0.0f, 0.30f),
+        norm_range(crt->scanline_strength, 0.0f, 1.0f),
+        norm_range(crt->noise_strength, 0.0f, 0.30f),
         norm_range(a->main_line_width, 1.0f, 16.0f)
     };
 
     for (int i = 0; i < UI_PARAM_COUNT; ++i) {
-        float row_y = 78.0f + (float)i * 42.0f;
-        vg_rect button = {40.0f, row_y, 222.0f, 30.0f};
+        float row_y = ui_y + rows_top + (float)i * row_step;
+        vg_rect button = {ui_x + 16.0f, row_y, 222.0f, 30.0f};
         r = vg_draw_button(a->vg, button, labels[i], 13.0f, &panel, &text, i == a->selected_param);
         if (r != VG_OK) {
             return r;
         }
 
-        vg_rect slider = {278.0f, row_y + 2.0f, 230.0f, 26.0f};
+        vg_rect slider = {ui_x + 254.0f, row_y + 2.0f, 230.0f, 26.0f};
         r = vg_draw_slider(a->vg, slider, values_norm[i], &panel, &text, &text);
         if (r != VG_OK) {
             return r;
         }
 
         snprintf(line, sizeof(line), "%.3f", values[i]);
-        r = vg_draw_text(a->vg, line, (vg_vec2){516.0f, row_y + 8.0f}, 11.5f, 0.8f, &text, NULL);
+        r = vg_draw_text(a->vg, line, (vg_vec2){ui_x + 492.0f, row_y + 8.0f}, 11.5f, 0.8f, &text, NULL);
         if (r != VG_OK) {
             return r;
         }
     }
 
-    return vg_draw_text(
-        a->vg,
-        "TAB UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
-        (vg_vec2){40.0f, 330.0f},
-        11.0f,
-        0.8f,
-        &text,
-        NULL
-    );
+    snprintf(line, sizeof(line), "FPS %.1f", fps);
+    return vg_draw_text(a->vg, line, (vg_vec2){ui_x + 16.0f, ui_y + ui_h - 26.0f}, 18.0f, 1.0f, &text, NULL);
 }
 
 static frame_result record_and_submit(app* a, uint32_t image_index, float t, float dt, float fps) {
@@ -1457,9 +1519,9 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
         return FRAME_FAIL;
     }
 
-    vg_retro_params retro;
-    vg_get_retro_params(a->vg, &retro);
-    float persistence = retro.persistence_decay;
+    vg_crt_profile crt;
+    vg_get_crt_profile(a->vg, &crt);
+    float persistence = crt.persistence_decay;
     if (persistence < 0.0f) {
         persistence = 0.0f;
     }
@@ -1473,12 +1535,12 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     }
 
     float flicker_n = rand_signed((uint32_t)(t * 1000.0f));
-    float intensity_scale = 1.0f + retro.flicker_amount * flicker_n;
+    float intensity_scale = 1.0f + crt.flicker_amount * flicker_n;
     if (intensity_scale < 0.0f) {
         intensity_scale = 0.0f;
     }
-    float jx = retro.jitter_amount * 2.0f * rand_signed((uint32_t)(t * 1300.0f));
-    float jy = retro.jitter_amount * 2.0f * rand_signed((uint32_t)(t * 1700.0f));
+    float jx = crt.jitter_amount * 2.0f * rand_signed((uint32_t)(t * 1300.0f));
+    float jy = crt.jitter_amount * 2.0f * rand_signed((uint32_t)(t * 1700.0f));
 
     vg_stroke_style fade = {
         .width_px = (float)a->swapchain_extent.height * 2.5f,
@@ -1502,9 +1564,18 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     float cx = (float)a->swapchain_extent.width * 0.5f;
     float cy = (float)a->swapchain_extent.height * 0.5f;
 
+    vg_stroke_style halo_s = {
+        .width_px = a->main_line_width * crt.beam_core_width_px + crt.beam_halo_width_px,
+        .intensity = 0.42f * crt.beam_intensity * intensity_scale,
+        .color = {0.2f, 1.0f, 0.35f, 0.45f},
+        .cap = VG_LINE_CAP_ROUND,
+        .join = VG_LINE_JOIN_ROUND,
+        .miter_limit = 4.0f,
+        .blend = VG_BLEND_ADDITIVE
+    };
     vg_stroke_style main_s = {
-        .width_px = a->main_line_width,
-        .intensity = 1.2f * intensity_scale,
+        .width_px = a->main_line_width * crt.beam_core_width_px,
+        .intensity = 1.2f * crt.beam_intensity * intensity_scale,
         .color = {0.2f, 1.0f, 0.35f, 1.0f},
         .cap = VG_LINE_CAP_ROUND,
         .join = VG_LINE_JOIN_ROUND,
@@ -1518,6 +1589,11 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
         {cx - 140.0f + jx, cy + 100.0f + jy},
         {cx + cosf(t) * 120.0f + jx, cy - 140.0f + jy}
     };
+    vr = vg_draw_polyline(a->vg, tri, 4, &halo_s, 0);
+    if (vr != VG_OK) {
+        fprintf(stderr, "vg_draw_polyline(tri halo) failed: %s\n", vg_result_string(vr));
+        return FRAME_FAIL;
+    }
     vr = vg_draw_polyline(a->vg, tri, 4, &main_s, 0);
     if (vr != VG_OK) {
         fprintf(stderr, "vg_draw_polyline(tri) failed: %s\n", vg_result_string(vr));
@@ -1528,6 +1604,11 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     vg_path_move_to(a->wave_path, (vg_vec2){120.0f + jx, cy + 220.0f + jy});
     vg_path_cubic_to(a->wave_path, (vg_vec2){280.0f + jx, cy + 80.0f + sinf(t) * 50.0f + jy}, (vg_vec2){420.0f + jx, cy + 360.0f + jy}, (vg_vec2){580.0f + jx, cy + 220.0f + jy});
     vg_path_cubic_to(a->wave_path, (vg_vec2){760.0f + jx, cy + 70.0f + jy}, (vg_vec2){920.0f + jx, cy + 370.0f + cosf(t * 1.2f) * 60.0f + jy}, (vg_vec2){1120.0f + jx, cy + 220.0f + jy});
+    vr = vg_draw_path_stroke(a->vg, a->wave_path, &halo_s);
+    if (vr != VG_OK) {
+        fprintf(stderr, "vg_draw_path_stroke(wave halo) failed: %s\n", vg_result_string(vr));
+        return FRAME_FAIL;
+    }
     vr = vg_draw_path_stroke(a->vg, a->wave_path, &main_s);
     if (vr != VG_OK) {
         fprintf(stderr, "vg_draw_path_stroke(wave) failed: %s\n", vg_result_string(vr));
@@ -1535,7 +1616,7 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     }
 
     if (a->show_ui) {
-        vr = draw_debug_ui(a, &retro, fps);
+        vr = draw_debug_ui(a, &crt, fps);
         if (vr != VG_OK) {
             fprintf(stderr, "draw_debug_ui failed: %s\n", vg_result_string(vr));
             return FRAME_FAIL;
@@ -1567,8 +1648,13 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     post_pc pc = {0};
     pc.texel[0] = 1.0f / (float)a->swapchain_extent.width;
     pc.texel[1] = 1.0f / (float)a->swapchain_extent.height;
-    pc.bloom_strength = retro.bloom_strength;
-    pc.bloom_radius_px = retro.bloom_radius_px;
+    pc.bloom_strength = crt.bloom_strength;
+    pc.bloom_radius_px = crt.bloom_radius_px;
+    pc.vignette_strength = crt.vignette_strength;
+    pc.barrel_distortion = crt.barrel_distortion;
+    pc.scanline_strength = crt.scanline_strength;
+    pc.noise_strength = crt.noise_strength;
+    pc.time_s = t;
     vkCmdPushConstants(cmd, a->post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
