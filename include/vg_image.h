@@ -8,7 +8,8 @@ extern "C" {
 #include "vg.h"
 
 typedef enum vg_image_style_kind {
-    VG_IMAGE_STYLE_MONO_SCANLINE = 0
+    VG_IMAGE_STYLE_MONO_SCANLINE = 0,
+    VG_IMAGE_STYLE_BLOCK_GRAPHICS = 1
 } vg_image_style_kind;
 
 typedef struct vg_image_desc {
@@ -26,11 +27,15 @@ typedef struct vg_image_style {
     float min_line_width_px;
     float max_line_width_px;
     float line_jitter_px;
+    float cell_width_px;
+    float cell_height_px;
+    int block_levels;
     float intensity;
     vg_color tint_color;
     vg_blend_mode blend;
     int use_crt_palette;
     int invert;
+    int use_boxed_glyphs;
 } vg_image_style;
 
 vg_result vg_draw_image_stylized(

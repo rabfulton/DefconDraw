@@ -516,6 +516,7 @@ Draws a pie/donut chart with optional percentage labels.
 ### `vg_image_style_kind`
 
 - `VG_IMAGE_STYLE_MONO_SCANLINE`
+- `VG_IMAGE_STYLE_BLOCK_GRAPHICS`
 
 ### `vg_image_desc`
 
@@ -530,6 +531,7 @@ Image stylization settings:
 - `kind`
 - tonal controls: `threshold`, `contrast`
 - scanline shape: `scanline_pitch_px`, `min_line_width_px`, `max_line_width_px`, `line_jitter_px`
+- block graphics: `cell_width_px`, `cell_height_px`, `block_levels` (`2..32`)
 - output controls: `intensity`, `tint_color`, `blend`
 - palette/polarity flags: `use_crt_palette`, `invert`
 
@@ -537,6 +539,48 @@ Image stylization settings:
 
 Draws a stylized image inside `dst`.  
 Current implementation supports mono scanline rendering where line thickness varies with local luminance.
+
+## SVG API (`vg_svg.h`)
+
+### `vg_svg_asset`
+
+Opaque loaded SVG geometry handle.
+
+### `vg_svg_load_params`
+
+Load/flatten controls:
+- `curve_tolerance_px`: bezier flattening tolerance in source SVG units.
+- `dpi`: parse DPI (default `96`).
+- `units`: parse units (default `"px"`).
+
+### `vg_svg_draw_params`
+
+Draw controls:
+- `dst`: output rectangle in screen pixels.
+- `preserve_aspect`: when non-zero, preserves source aspect ratio and centers in `dst`.
+- `flip_y`: optional Y flip in destination space.
+- `fill_closed_paths`: when non-zero, attempts fill passes on closed paths.
+- `use_source_colors`: when non-zero, uses SVG fill/stroke colors when available.
+- `fill_intensity`, `stroke_intensity`: pass-level intensity scales.
+- `palette`, `palette_count`: optional palette quantization for SVG colors.
+
+### `vg_svg_load_from_file(const char* file_path, const vg_svg_load_params* params, vg_svg_asset** out_asset)`
+
+Loads an SVG file and flattens vector paths to polyline data for fast drawing.
+
+### `vg_svg_get_bounds(const vg_svg_asset* asset, vg_rect* out_bounds)`
+
+Returns source-space bounds for the loaded SVG asset.
+
+### `vg_svg_draw(vg_context* ctx, const vg_svg_asset* asset, const vg_svg_draw_params* params, const vg_stroke_style* style)`
+
+Draws the flattened SVG asset using the provided stroke style.
+When `use_source_colors` is enabled, `style` is used as a geometric fallback/base (width/caps/join/blend), while colors come from SVG path paints.
+Fill rendering uses tessellated triangles, so concave shapes and hole contours are supported according to SVG fill rule (even-odd or non-zero).
+
+### `vg_svg_destroy(vg_svg_asset* asset)`
+
+Releases SVG asset memory.
 
 ## Text Layout API (`vg_text_layout.h`)
 

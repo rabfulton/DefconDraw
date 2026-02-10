@@ -12,6 +12,14 @@ option(VG_BUILD_VK_SDL_EXAMPLE "Build Vulkan + SDL example" ON)
 add_library(vg STATIC
     src/vg.c
     src/vg_image.c
+    src/vg_svg.c
+    third_party/libtess2/Source/bucketalloc.c
+    third_party/libtess2/Source/dict.c
+    third_party/libtess2/Source/geom.c
+    third_party/libtess2/Source/mesh.c
+    third_party/libtess2/Source/priorityq.c
+    third_party/libtess2/Source/sweep.c
+    third_party/libtess2/Source/tess.c
     src/vg_text_fx.c
     src/vg_text_layout.c
     src/vg_ui.c
@@ -68,6 +76,7 @@ target_include_directories(vg
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libtess2/Include
 )
 
 target_compile_options(vg PRIVATE

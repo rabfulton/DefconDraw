@@ -1,5 +1,6 @@
 #include "vg.h"
 #include "vg_image.h"
+#include "vg_svg.h"
 #include "vg_text_fx.h"
 #include "vg_text_layout.h"
 #include "vg_ui.h"
@@ -13,6 +14,8 @@
 #include <vulkan/vulkan.h>
 
 #include <math.h>
+#include <dirent.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +37,7 @@
 #define APP_WIDTH 1440
 #define APP_HEIGHT 900
 #define APP_MAX_SWAPCHAIN_IMAGES 8
+#define APP_MAX_SVG_FILES 128
 
 typedef struct post_pc {
     float p0[4]; /* texel.x, texel.y, bloom_strength, bloom_radius */
@@ -111,6 +115,7 @@ typedef struct app {
     int show_ui;
     int selected_param;
     int selected_image_param;
+    int selected_text_param;
     float main_line_width;
     float fps_smoothed;
     int prev_adjust_dir;
@@ -141,12 +146,21 @@ typedef struct app {
     uint32_t image_w;
     uint32_t image_h;
     uint32_t image_stride;
+    vg_svg_asset* svg_asset;
+    char svg_asset_name[128];
+    char svg_dir_path[256];
+    char svg_files[APP_MAX_SVG_FILES][128];
+    int svg_file_count;
+    int svg_file_index;
     float image_threshold;
     float image_contrast;
     float image_pitch_px;
     float image_min_width_px;
     float image_max_width_px;
     float image_jitter_px;
+    float image_block_cell_w_px;
+    float image_block_cell_h_px;
+    int image_block_levels;
     int image_invert;
     vg_text_fx_marquee scene7_marquee;
 } app;
@@ -165,8 +179,7 @@ enum {
     UI_PARAM_SCANLINE = 10,
     UI_PARAM_NOISE = 11,
     UI_PARAM_LINE_WIDTH = 12,
-    UI_PARAM_BOX_WEIGHT = 13,
-    UI_PARAM_COUNT = 14
+    UI_PARAM_COUNT = 13
 };
 
 enum {
@@ -176,8 +189,16 @@ enum {
     IMAGE_UI_PARAM_MIN_WIDTH = 3,
     IMAGE_UI_PARAM_MAX_WIDTH = 4,
     IMAGE_UI_PARAM_JITTER = 5,
-    IMAGE_UI_PARAM_INVERT = 6,
-    IMAGE_UI_PARAM_COUNT = 7
+    IMAGE_UI_PARAM_BLOCK_W = 6,
+    IMAGE_UI_PARAM_BLOCK_H = 7,
+    IMAGE_UI_PARAM_BLOCK_LEVELS = 8,
+    IMAGE_UI_PARAM_INVERT = 9,
+    IMAGE_UI_PARAM_COUNT = 10
+};
+
+enum {
+    TEXT_UI_PARAM_BOX_WEIGHT = 0,
+    TEXT_UI_PARAM_COUNT = 1
 };
 
 static const float k_ui_x = 24.0f;
@@ -186,6 +207,7 @@ static const float k_ui_w = 560.0f;
 static const float k_ui_row_step = 40.0f;
 static const float k_ui_h = 70.0f + (float)UI_PARAM_COUNT * 40.0f + 56.0f;
 static const float k_ui_image_h = 70.0f + (float)IMAGE_UI_PARAM_COUNT * 40.0f + 56.0f;
+static const float k_ui_text_h = 70.0f + (float)TEXT_UI_PARAM_COUNT * 40.0f + 56.0f;
 
 enum {
     SCENE_CLASSIC = 0,
@@ -297,10 +319,10 @@ static void set_scene(app* a, int mode) {
         "STATUS READY\nMODE 2 WIREFRAME CUBE\nROTATION + PERSPECTIVE TEST",
         "STATUS READY\nMODE 3 STARFIELD\nDEPTH MOTION + STREAK TEST",
         "STATUS READY\nMODE 4 SURFACE PLOT\n3D FUNCTION GRID TEST",
-        "STATUS READY\nMODE 5 SYNTH TERRAIN\nHORIZON + PARALLAX TEST",
-        "STATUS READY\nMODE 6 FILL PRIMITIVES\nCONVEX + RECT + CIRCLE TEST",
+        "STATUS READY\nMODE 5 SVG IMPORTER\nVECTOR ASSET PREVIEW",
+        "STATUS READY\nMODE 6 SOLAR INFOGRAPHIC\nFILLS + ORBITS + CALLOUTS",
         "STATUS READY\nMODE 7 TITLE CRAWL\nBOXED FONT + ROTARY TEST",
-        "STATUS READY\nMODE 8 IMAGE FX TEST\nMONO SCANLINE IMPORT"
+        "STATUS READY\nMODE 8 IMAGE FX TEST\nMONO + BLOCK + SVG"
     };
     if (mode < 0 || mode >= SCENE_COUNT) {
         return;
@@ -333,11 +355,9 @@ static void init_teletype_audio(app* a) {
 static void init_image_asset(app* a) {
 #if VG_DEMO_HAS_SDL_IMAGE
     static const char* k_candidates[] = {
-        "nick.jpg",
         "assets/nick.jpg",
-        "../nick.jpg",
         "../assets/nick.jpg",
-        "../../nick.jpg"
+        "../../assets/nick.jpg"
     };
     SDL_Surface* src = NULL;
     const char* loaded_path = NULL;
@@ -373,6 +393,102 @@ static void init_image_asset(app* a) {
 #else
     (void)a;
 #endif
+}
+
+static int has_svg_ext(const char* name) {
+    if (!name) {
+        return 0;
+    }
+    const char* dot = strrchr(name, '.');
+    if (!dot) {
+        return 0;
+    }
+    return tolower((unsigned char)dot[1]) == 's' &&
+           tolower((unsigned char)dot[2]) == 'v' &&
+           tolower((unsigned char)dot[3]) == 'g' &&
+           dot[4] == '\0';
+}
+
+static int cmp_svg_name(const void* a, const void* b) {
+    const char* sa = (const char*)a;
+    const char* sb = (const char*)b;
+    return strcmp(sa, sb);
+}
+
+static void load_svg_asset_at_index(app* a, int index) {
+    if (!a || a->svg_file_count <= 0 || a->svg_dir_path[0] == '\0') {
+        return;
+    }
+    if (index < 0) {
+        index = a->svg_file_count - 1;
+    } else if (index >= a->svg_file_count) {
+        index = 0;
+    }
+
+    char full_path[512];
+    snprintf(full_path, sizeof(full_path), "%s/%s", a->svg_dir_path, a->svg_files[index]);
+
+    vg_svg_load_params lp = {
+        .curve_tolerance_px = 1.0f,
+        .dpi = 96.0f,
+        .units = "px"
+    };
+
+    vg_svg_asset* next_asset = NULL;
+    vg_result r = vg_svg_load_from_file(full_path, &lp, &next_asset);
+    if (r != VG_OK) {
+        fprintf(stderr, "vg_svg_load_from_file failed for %s (%d)\n", full_path, (int)r);
+        return;
+    }
+
+    if (a->svg_asset) {
+        vg_svg_destroy(a->svg_asset);
+    }
+    a->svg_asset = next_asset;
+    a->svg_file_index = index;
+    snprintf(a->svg_asset_name, sizeof(a->svg_asset_name), "%s", a->svg_files[index]);
+    fprintf(stderr, "svg loaded [%d/%d]: %s\n", index + 1, a->svg_file_count, full_path);
+}
+
+static void cycle_svg_asset(app* a, int dir) {
+    if (!a || a->svg_file_count <= 0) {
+        return;
+    }
+    load_svg_asset_at_index(a, a->svg_file_index + dir);
+}
+
+static void init_svg_asset(app* a) {
+    static const char* k_dirs[] = {"assets", "../assets", "../../assets"};
+    a->svg_file_count = 0;
+    a->svg_file_index = 0;
+    a->svg_dir_path[0] = '\0';
+    a->svg_asset_name[0] = '\0';
+
+    for (size_t d = 0; d < sizeof(k_dirs) / sizeof(k_dirs[0]); ++d) {
+        DIR* dir = opendir(k_dirs[d]);
+        if (!dir) {
+            continue;
+        }
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != NULL) {
+            if (!has_svg_ext(ent->d_name) || a->svg_file_count >= APP_MAX_SVG_FILES) {
+                continue;
+            }
+            snprintf(a->svg_files[a->svg_file_count], sizeof(a->svg_files[a->svg_file_count]), "%s", ent->d_name);
+            a->svg_file_count++;
+        }
+        closedir(dir);
+        if (a->svg_file_count > 0) {
+            snprintf(a->svg_dir_path, sizeof(a->svg_dir_path), "%s", k_dirs[d]);
+            qsort(a->svg_files, (size_t)a->svg_file_count, sizeof(a->svg_files[0]), cmp_svg_name);
+            break;
+        }
+    }
+
+    if (a->svg_file_count <= 0) {
+        return;
+    }
+    load_svg_asset_at_index(a, 0);
 }
 
 static void init_starfield(app* a) {
@@ -1672,9 +1788,6 @@ static void apply_selected_tweak(app* a, int dir) {
         case UI_PARAM_LINE_WIDTH:
             a->main_line_width = clampf(a->main_line_width + 0.25f * (float)dir, 1.0f, 16.0f);
             break;
-        case UI_PARAM_BOX_WEIGHT:
-            a->boxed_font_weight = clampf(a->boxed_font_weight + 0.06f * (float)dir, 0.25f, 3.0f);
-            break;
         default:
             break;
     }
@@ -1715,6 +1828,17 @@ static void apply_selected_image_tweak(app* a, int dir) {
         case IMAGE_UI_PARAM_JITTER:
             a->image_jitter_px = clampf(a->image_jitter_px + 0.05f * (float)dir, 0.0f, 3.0f);
             break;
+        case IMAGE_UI_PARAM_BLOCK_W:
+            a->image_block_cell_w_px = clampf(a->image_block_cell_w_px + 1.0f * (float)dir, 2.0f, 40.0f);
+            break;
+        case IMAGE_UI_PARAM_BLOCK_H:
+            a->image_block_cell_h_px = clampf(a->image_block_cell_h_px + 1.0f * (float)dir, 2.0f, 48.0f);
+            break;
+        case IMAGE_UI_PARAM_BLOCK_LEVELS:
+            a->image_block_levels += dir;
+            if (a->image_block_levels < 2) a->image_block_levels = 2;
+            if (a->image_block_levels > 32) a->image_block_levels = 32;
+            break;
         case IMAGE_UI_PARAM_INVERT:
             if (dir != 0) {
                 a->image_invert = !a->image_invert;
@@ -1733,16 +1857,37 @@ static void step_selected_image_param(app* a, int dir) {
     }
 }
 
+static void apply_selected_text_tweak(app* a, int dir) {
+    switch (a->selected_text_param) {
+        case TEXT_UI_PARAM_BOX_WEIGHT:
+            a->boxed_font_weight = clampf(a->boxed_font_weight + 0.06f * (float)dir, 0.25f, 3.0f);
+            return;
+        default:
+            return;
+    }
+}
+
+static void step_selected_text_param(app* a, int dir) {
+    if (dir > 0) {
+        a->selected_text_param = (a->selected_text_param + 1) % TEXT_UI_PARAM_COUNT;
+    } else if (dir < 0) {
+        a->selected_text_param = (a->selected_text_param + TEXT_UI_PARAM_COUNT - 1) % TEXT_UI_PARAM_COUNT;
+    }
+}
+
 static void handle_ui_hold(app* a, float dt) {
     const Uint8* ks = SDL_GetKeyboardState(NULL);
     int adjust_dir = (ks[SDL_SCANCODE_RIGHT] ? 1 : 0) - (ks[SDL_SCANCODE_LEFT] ? 1 : 0);
     int nav_dir = (ks[SDL_SCANCODE_UP] ? 1 : 0) - (ks[SDL_SCANCODE_DOWN] ? 1 : 0);
     int image_ui = (a->scene_mode == SCENE_IMAGE_FX);
+    int text_ui = (a->scene_mode == SCENE_TITLE_CRAWL);
 
     if (adjust_dir != 0) {
         if (adjust_dir != a->prev_adjust_dir) {
             if (image_ui) {
                 apply_selected_image_tweak(a, adjust_dir);
+            } else if (text_ui) {
+                apply_selected_text_tweak(a, adjust_dir);
             } else {
                 apply_selected_tweak(a, adjust_dir);
             }
@@ -1752,6 +1897,8 @@ static void handle_ui_hold(app* a, float dt) {
             while (a->adjust_repeat_timer <= 0.0f) {
                 if (image_ui) {
                     apply_selected_image_tweak(a, adjust_dir);
+                } else if (text_ui) {
+                    apply_selected_text_tweak(a, adjust_dir);
                 } else {
                     apply_selected_tweak(a, adjust_dir);
                 }
@@ -1767,6 +1914,8 @@ static void handle_ui_hold(app* a, float dt) {
         if (nav_dir != a->prev_nav_dir) {
             if (image_ui) {
                 step_selected_image_param(a, nav_dir);
+            } else if (text_ui) {
+                step_selected_text_param(a, nav_dir);
             } else {
                 step_selected_param(a, nav_dir);
             }
@@ -1776,6 +1925,8 @@ static void handle_ui_hold(app* a, float dt) {
             while (a->nav_repeat_timer <= 0.0f) {
                 if (image_ui) {
                     step_selected_image_param(a, nav_dir);
+                } else if (text_ui) {
+                    step_selected_text_param(a, nav_dir);
                 } else {
                     step_selected_param(a, nav_dir);
                 }
@@ -1791,8 +1942,8 @@ static void handle_ui_hold(app* a, float dt) {
 static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
     vg_stroke_style panel = {
         .width_px = 2.0f,
-        .intensity = 0.78f,
-        .color = {0.87f, 0.38f, 0.08f, 0.92f},
+        .intensity = 0.98f,
+        .color = {1.0f, 0.56f, 0.12f, 0.98f},
         .cap = VG_LINE_CAP_BUTT,
         .join = VG_LINE_JOIN_BEVEL,
         .miter_limit = 2.0f,
@@ -1818,8 +1969,7 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
         "BARREL DISTORT",
         "SCANLINE",
         "NOISE",
-        "LINE WIDTH PX",
-        "BOX WEIGHT"
+        "LINE WIDTH PX"
     };
     float values[UI_PARAM_COUNT] = {
         crt->bloom_strength,
@@ -1834,8 +1984,7 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
         crt->barrel_distortion,
         crt->scanline_strength,
         crt->noise_strength,
-        a->main_line_width,
-        a->boxed_font_weight
+        a->main_line_width
     };
     float values_norm[UI_PARAM_COUNT] = {
         norm_range(crt->bloom_strength, 0.0f, 3.0f),
@@ -1850,8 +1999,7 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
         norm_range(crt->barrel_distortion, 0.0f, 0.30f),
         norm_range(crt->scanline_strength, 0.0f, 1.0f),
         norm_range(crt->noise_strength, 0.0f, 0.30f),
-        norm_range(a->main_line_width, 1.0f, 16.0f),
-        norm_range(a->boxed_font_weight, 0.25f, 3.0f)
+        norm_range(a->main_line_width, 1.0f, 16.0f)
     };
     vg_ui_slider_item items[UI_PARAM_COUNT];
     for (int i = 0; i < UI_PARAM_COUNT; ++i) {
@@ -1883,8 +2031,8 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
 static vg_result draw_image_debug_ui(app* a, float fps) {
     vg_stroke_style panel = {
         .width_px = 2.0f,
-        .intensity = 0.82f,
-        .color = {0.18f, 0.78f, 0.98f, 0.92f},
+        .intensity = 0.98f,
+        .color = {1.0f, 0.56f, 0.12f, 0.98f},
         .cap = VG_LINE_CAP_BUTT,
         .join = VG_LINE_JOIN_BEVEL,
         .miter_limit = 2.0f,
@@ -1904,6 +2052,9 @@ static vg_result draw_image_debug_ui(app* a, float fps) {
         "LINE MIN",
         "LINE MAX",
         "JITTER",
+        "BLOCK CELL W",
+        "BLOCK CELL H",
+        "BLOCK LEVELS",
         "INVERT"
     };
     float values[IMAGE_UI_PARAM_COUNT] = {
@@ -1913,6 +2064,9 @@ static vg_result draw_image_debug_ui(app* a, float fps) {
         a->image_min_width_px,
         a->image_max_width_px,
         a->image_jitter_px,
+        a->image_block_cell_w_px,
+        a->image_block_cell_h_px,
+        (float)a->image_block_levels,
         a->image_invert ? 1.0f : 0.0f
     };
     float values_norm[IMAGE_UI_PARAM_COUNT] = {
@@ -1922,6 +2076,9 @@ static vg_result draw_image_debug_ui(app* a, float fps) {
         norm_range(a->image_min_width_px, 0.2f, 8.0f),
         norm_range(a->image_max_width_px, 0.2f, 12.0f),
         norm_range(a->image_jitter_px, 0.0f, 3.0f),
+        norm_range(a->image_block_cell_w_px, 2.0f, 40.0f),
+        norm_range(a->image_block_cell_h_px, 2.0f, 48.0f),
+        norm_range((float)a->image_block_levels, 2.0f, 32.0f),
         a->image_invert ? 1.0f : 0.0f
     };
     vg_ui_slider_item items[IMAGE_UI_PARAM_COUNT];
@@ -1940,6 +2097,59 @@ static vg_result draw_image_debug_ui(app* a, float fps) {
         .footer_line = footer,
         .items = items,
         .item_count = IMAGE_UI_PARAM_COUNT,
+        .row_height_px = k_ui_row_step,
+        .label_size_px = 11.0f,
+        .value_size_px = 11.5f,
+        .border_style = panel,
+        .text_style = text,
+        .track_style = text,
+        .knob_style = text
+    };
+    return vg_ui_draw_slider_panel(a->vg, &ui);
+}
+
+static vg_result draw_text_debug_ui(app* a, float fps) {
+    vg_stroke_style panel = {
+        .width_px = 2.0f,
+        .intensity = 0.98f,
+        .color = {1.0f, 0.56f, 0.12f, 0.98f},
+        .cap = VG_LINE_CAP_BUTT,
+        .join = VG_LINE_JOIN_BEVEL,
+        .miter_limit = 2.0f,
+        .blend = VG_BLEND_ALPHA
+    };
+    vg_stroke_style text = panel;
+    text.width_px = 1.7f;
+    text.intensity = 1.05f;
+    text.cap = VG_LINE_CAP_ROUND;
+    text.join = VG_LINE_JOIN_ROUND;
+    text.blend = VG_BLEND_ALPHA;
+
+    static const char* labels[TEXT_UI_PARAM_COUNT] = {
+        "BOX WEIGHT"
+    };
+    float values[TEXT_UI_PARAM_COUNT] = {
+        a->boxed_font_weight
+    };
+    float values_norm[TEXT_UI_PARAM_COUNT] = {
+        norm_range(a->boxed_font_weight, 0.25f, 3.0f)
+    };
+    vg_ui_slider_item items[TEXT_UI_PARAM_COUNT];
+    for (int i = 0; i < TEXT_UI_PARAM_COUNT; ++i) {
+        items[i].label = labels[i];
+        items[i].value_01 = values_norm[i];
+        items[i].value_display = values[i];
+        items[i].selected = (i == a->selected_text_param);
+    }
+    char footer[64];
+    snprintf(footer, sizeof(footer), "FPS %.1f", fps);
+    vg_ui_slider_panel_desc ui = {
+        .rect = {k_ui_x, k_ui_y, k_ui_w, k_ui_text_h},
+        .title_line_0 = "TEXT UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
+        .title_line_1 = "SCENE 7 TEXT  TAB TOGGLE UI",
+        .footer_line = footer,
+        .items = items,
+        .item_count = TEXT_UI_PARAM_COUNT,
         .row_height_px = k_ui_row_step,
         .label_size_px = 11.0f,
         .value_size_px = 11.5f,
@@ -2230,114 +2440,202 @@ static vg_result draw_scene_surface(app* a, const vg_stroke_style* halo_s, const
 }
 
 static vg_result draw_scene_synthwave(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h) {
-    float cx = w * 0.5f;
-    float bottom_y = h * 0.10f;
-    float horizon_y = h * 0.46f;
+    vg_stroke_style frame = *main_s;
+    frame.blend = VG_BLEND_ALPHA;
+    frame.width_px = 1.4f;
+    frame.intensity = 0.92f;
 
-    for (int i = 0; i < 22; ++i) {
-        float u = (float)i / 21.0f;
-        float y = horizon_y - u * u * (horizon_y - bottom_y);
-        float hw = 32.0f + (w * 0.52f - 32.0f) * u;
-        vg_vec2 seg[2] = {{cx - hw, y}, {cx + hw, y}};
-        vg_result vr = vg_draw_polyline(a->vg, seg, 2, halo_s, 0);
-        if (vr != VG_OK) return vr;
-        vr = vg_draw_polyline(a->vg, seg, 2, main_s, 0);
-        if (vr != VG_OK) return vr;
+    vg_rect panel = {w * 0.08f, h * 0.10f, w * 0.84f, h * 0.74f};
+    vg_result vr = vg_draw_rect(a->vg, panel, &frame);
+    if (vr != VG_OK) {
+        return vr;
     }
 
-    for (int i = -14; i <= 14; ++i) {
-        float u = (float)i / 14.0f;
-        vg_vec2 seg[2] = {
-            {cx + u * w * 0.50f, bottom_y},
-            {cx + u * 24.0f, horizon_y}
-        };
-        vg_result vr = vg_draw_polyline(a->vg, seg, 2, halo_s, 0);
-        if (vr != VG_OK) return vr;
-        vr = vg_draw_polyline(a->vg, seg, 2, main_s, 0);
-        if (vr != VG_OK) return vr;
+    if (!a->svg_asset) {
+        vr = vg_draw_text(a->vg, "NO SVG FOUND IN ASSETS", (vg_vec2){w * 0.27f, h * 0.50f}, 20.0f, 1.1f, main_s, NULL);
+        if (vr != VG_OK) {
+            return vr;
+        }
+        return vg_draw_text(a->vg, "ADD SVG FILE AND RESTART DEMO", (vg_vec2){w * 0.20f, h * 0.44f}, 16.0f, 1.0f, &frame, NULL);
     }
 
-    vg_path_clear(a->wave_path);
-    for (int i = 0; i <= 96; ++i) {
-        float u = (float)i / 96.0f;
-        float x = u * w;
-        float y = horizon_y + 48.0f + 32.0f * sinf(u * 11.0f + t * 0.55f) + 15.0f * sinf(u * 24.0f + t * 0.20f);
-        if (i == 0) vg_path_move_to(a->wave_path, (vg_vec2){x, y});
-        else vg_path_line_to(a->wave_path, (vg_vec2){x, y});
+    vg_stroke_style svg_halo = *halo_s;
+    svg_halo.blend = VG_BLEND_ALPHA;
+    svg_halo.intensity = halo_s->intensity * 0.60f;
+    svg_halo.width_px = main_s->width_px * 2.2f;
+
+    vg_stroke_style svg_main = *main_s;
+    svg_main.blend = VG_BLEND_ADDITIVE;
+    svg_main.intensity = main_s->intensity * 1.08f;
+    svg_main.width_px = clampf(main_s->width_px * 0.95f, 0.9f, 2.6f);
+    vg_color pal[5] = {
+        {0.08f, 0.30f, 0.08f, 1.0f},
+        {0.12f, 0.48f, 0.14f, 1.0f},
+        {0.18f, 0.72f, 0.22f, 1.0f},
+        {0.38f, 0.92f, 0.40f, 1.0f},
+        {0.82f, 1.00f, 0.86f, 1.0f}
+    };
+
+    float pulse = 0.96f + 0.08f * sinf(t * 0.9f);
+    vg_svg_draw_params sp = {
+        .dst = {
+            panel.x + panel.w * 0.06f,
+            panel.y + panel.h * 0.07f,
+            panel.w * 0.88f * pulse,
+            panel.h * 0.86f * pulse
+        },
+        .preserve_aspect = 1,
+        .flip_y = 1,
+        .fill_closed_paths = 1,
+        .use_source_colors = 1,
+        .fill_intensity = 0.65f,
+        .stroke_intensity = 1.0f,
+        .palette = pal,
+        .palette_count = 5u
+    };
+    sp.dst.x += (panel.w * 0.88f - sp.dst.w) * 0.5f;
+    sp.dst.y += (panel.h * 0.86f - sp.dst.h) * 0.5f;
+
+    vr = vg_svg_draw(a->vg, a->svg_asset, &sp, &svg_halo);
+    if (vr != VG_OK) {
+        return vr;
     }
-    vg_result vr = vg_draw_path_stroke(a->vg, a->wave_path, halo_s);
-    if (vr != VG_OK) return vr;
-    return vg_draw_path_stroke(a->vg, a->wave_path, main_s);
+    vr = vg_svg_draw(a->vg, a->svg_asset, &sp, &svg_main);
+    if (vr != VG_OK) {
+        return vr;
+    }
+
+    vg_rect src_bounds = {0};
+    (void)vg_svg_get_bounds(a->svg_asset, &src_bounds);
+
+    char info[256];
+    snprintf(
+        info,
+        sizeof(info),
+        "SVG %d OF %d  SRC %.0fx%.0f  FIT %.0fx%.0f",
+        a->svg_file_index + 1,
+        a->svg_file_count,
+        src_bounds.w,
+        src_bounds.h,
+        sp.dst.w,
+        sp.dst.h
+    );
+    vr = vg_draw_text(a->vg, info, (vg_vec2){w * 0.10f, h * 0.06f}, 12.0f, 0.8f, &frame, NULL);
+    if (vr != VG_OK) {
+        return vr;
+    }
+
+    snprintf(
+        info,
+        sizeof(info),
+        "FILE %s   SPACE NEXT SVG",
+        a->svg_asset_name[0] ? a->svg_asset_name : "(unnamed)"
+    );
+    vr = vg_draw_text(a->vg, info, (vg_vec2){w * 0.10f, h * 0.03f}, 11.0f, 0.7f, &frame, NULL);
+    if (vr != VG_OK) {
+        return vr;
+    }
+    return vg_draw_text(a->vg, "MODE 5 SVG IMPORT PREVIEW", (vg_vec2){w * 0.10f, h * 0.84f}, 14.0f, 0.9f, &frame, NULL);
 }
 
 static vg_result draw_scene_fill_prims(app* a, float t, float w, float h) {
-    vg_fill_style bg_fill = {.intensity = 0.55f, .color = {0.06f, 0.24f, 0.10f, 0.25f}, .blend = VG_BLEND_ALPHA};
-    vg_fill_style hot_fill = {.intensity = 1.0f, .color = {0.18f, 1.0f, 0.42f, 0.42f}, .blend = VG_BLEND_ADDITIVE};
-    vg_fill_style cool_fill = {.intensity = 0.9f, .color = {0.22f, 0.82f, 1.0f, 0.35f}, .blend = VG_BLEND_ALPHA};
+    vg_fill_style panel_fill = {.intensity = 0.75f, .color = {0.04f, 0.13f, 0.08f, 0.35f}, .blend = VG_BLEND_ALPHA};
+    vg_fill_style sun_fill = {.intensity = 1.1f, .color = {0.95f, 1.00f, 0.42f, 0.56f}, .blend = VG_BLEND_ADDITIVE};
+    vg_fill_style sun_core = {.intensity = 1.0f, .color = {1.00f, 0.90f, 0.22f, 0.72f}, .blend = VG_BLEND_ALPHA};
+    vg_fill_style orbit_marker_fill = {.intensity = 1.0f, .color = {0.25f, 1.0f, 0.52f, 0.55f}, .blend = VG_BLEND_ADDITIVE};
+
     vg_stroke_style edge = {
-        .width_px = 2.2f,
-        .intensity = 1.1f,
-        .color = {0.24f, 1.0f, 0.52f, 0.95f},
+        .width_px = 2.0f,
+        .intensity = 1.05f,
+        .color = {0.24f, 1.0f, 0.52f, 0.92f},
         .cap = VG_LINE_CAP_ROUND,
         .join = VG_LINE_JOIN_ROUND,
         .miter_limit = 2.0f,
         .blend = VG_BLEND_ADDITIVE
     };
+    vg_stroke_style orbit = edge;
+    orbit.width_px = 1.15f;
+    orbit.intensity = 0.55f;
+    orbit.blend = VG_BLEND_ALPHA;
+    vg_stroke_style label = edge;
+    label.width_px = 1.35f;
+    label.intensity = 0.9f;
+    label.blend = VG_BLEND_ALPHA;
 
-    vg_result vr = vg_fill_rect(a->vg, (vg_rect){w * 0.08f, h * 0.16f, w * 0.36f, h * 0.22f}, &bg_fill);
+    vg_result vr = vg_fill_rect(a->vg, (vg_rect){w * 0.04f, h * 0.10f, w * 0.64f, h * 0.78f}, &panel_fill);
     if (vr != VG_OK) return vr;
-    vr = vg_draw_rect(a->vg, (vg_rect){w * 0.08f, h * 0.16f, w * 0.36f, h * 0.22f}, &edge);
+    vr = vg_draw_rect(a->vg, (vg_rect){w * 0.04f, h * 0.10f, w * 0.64f, h * 0.78f}, &orbit);
     if (vr != VG_OK) return vr;
 
-    for (int i = 0; i < 3; ++i) {
-        float a0 = t * (0.5f + 0.2f * (float)i) + (float)i;
-        vg_vec2 c = {w * (0.63f + 0.09f * cosf(a0)), h * (0.34f + 0.10f * sinf(a0 * 1.3f))};
-        float r = 52.0f + 16.0f * sinf(a0 * 1.7f);
-        vr = vg_fill_circle(a->vg, c, r, i == 1 ? &cool_fill : &hot_fill, 32);
+    vg_rect side = {w * 0.72f, h * 0.16f, w * 0.24f, h * 0.62f};
+    vr = vg_fill_rect(a->vg, side, &panel_fill);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_rect(a->vg, side, &orbit);
+    if (vr != VG_OK) return vr;
+
+    vg_vec2 c = {w * 0.36f, h * 0.49f};
+    float base = h * 0.062f;
+    vr = vg_fill_circle(a->vg, c, base * 1.45f, &sun_fill, 48);
+    if (vr != VG_OK) return vr;
+    vr = vg_fill_circle(a->vg, c, base, &sun_core, 42);
+    if (vr != VG_OK) return vr;
+
+    const char* names[5] = {"MERCURY", "VENUS", "EARTH", "MARS", "JUPITER"};
+    float orbit_r[5] = {h * 0.11f, h * 0.16f, h * 0.22f, h * 0.29f, h * 0.37f};
+    float planet_r[5] = {4.5f, 6.5f, 7.5f, 5.8f, 12.0f};
+    float speed[5] = {1.5f, 1.15f, 0.95f, 0.78f, 0.55f};
+    float phase[5] = {0.7f, 1.8f, 3.2f, 5.0f, 2.4f};
+    vg_color pcol[5] = {
+        {0.96f, 0.84f, 0.52f, 0.95f},
+        {0.95f, 0.70f, 0.38f, 0.95f},
+        {0.35f, 0.95f, 1.00f, 0.95f},
+        {1.00f, 0.58f, 0.40f, 0.95f},
+        {0.82f, 0.90f, 0.55f, 0.95f}
+    };
+
+    for (int i = 0; i < 5; ++i) {
+        vr = vg_draw_polyline(
+            a->vg,
+            (vg_vec2[]){ {c.x - orbit_r[i], c.y}, {c.x + orbit_r[i], c.y} },
+            2u,
+            &orbit,
+            0
+        );
         if (vr != VG_OK) return vr;
-        vr = vg_draw_polyline(a->vg, (vg_vec2[]){ {c.x - r, c.y}, {c.x + r, c.y} }, 2, &edge, 0);
+        vr = vg_draw_polyline(
+            a->vg,
+            (vg_vec2[]){ {c.x, c.y - orbit_r[i]}, {c.x, c.y + orbit_r[i]} },
+            2u,
+            &orbit,
+            0
+        );
+        if (vr != VG_OK) return vr;
+
+        float a0 = t * speed[i] + phase[i];
+        vg_vec2 p = {c.x + cosf(a0) * orbit_r[i], c.y + sinf(a0) * orbit_r[i]};
+        vg_fill_style pf = {.intensity = 1.0f, .color = pcol[i], .blend = VG_BLEND_ADDITIVE};
+        vr = vg_fill_circle(a->vg, p, planet_r[i] * 1.8f, &orbit_marker_fill, 22);
+        if (vr != VG_OK) return vr;
+        vr = vg_fill_circle(a->vg, p, planet_r[i], &pf, 22);
+        if (vr != VG_OK) return vr;
+
+        vg_vec2 label_anchor = {w * 0.73f, h * (0.24f + 0.10f * (float)i)};
+        vr = vg_draw_polyline(a->vg, (vg_vec2[]){p, label_anchor}, 2u, &orbit, 0);
+        if (vr != VG_OK) return vr;
+        vr = vg_draw_text(a->vg, names[i], (vg_vec2){label_anchor.x + 8.0f, label_anchor.y - 5.0f}, 12.0f, 0.8f, &label, NULL);
+        if (vr != VG_OK) return vr;
+
+        char km[64];
+        snprintf(km, sizeof(km), "R %.0f M KM", orbit_r[i] * 9.0f);
+        vr = vg_draw_text(a->vg, km, (vg_vec2){side.x + 16.0f, label_anchor.y - 20.0f}, 10.0f, 0.6f, &orbit, NULL);
         if (vr != VG_OK) return vr;
     }
 
-    for (int p = 0; p < 2; ++p) {
-        vg_vec2 poly[6];
-        float base = t * 0.45f + (float)p * 1.6f;
-        vg_vec2 center = {w * (0.26f + 0.28f * (float)p), h * 0.66f};
-        for (int i = 0; i < 6; ++i) {
-            float ang = base + (float)i / 6.0f * 6.28318530718f;
-            float rr = 52.0f + (i % 2 ? 20.0f : -10.0f);
-            poly[i].x = center.x + cosf(ang) * rr;
-            poly[i].y = center.y + sinf(ang) * rr;
-        }
-        vr = vg_fill_convex(a->vg, poly, 6, p == 0 ? &hot_fill : &cool_fill);
-        if (vr != VG_OK) return vr;
-        vr = vg_draw_polyline(a->vg, poly, 6, &edge, 1);
-        if (vr != VG_OK) return vr;
-    }
-
-    vg_result tr = vg_transform_push(a->vg);
-    if (tr != VG_OK) {
-        return tr;
-    }
-    vg_transform_translate(a->vg, w * 0.78f, h * 0.70f);
-    vg_transform_rotate(a->vg, t * 0.95f);
-    vg_transform_scale(a->vg, 1.25f, 0.90f);
-    vr = vg_fill_rect(a->vg, (vg_rect){-48.0f, -24.0f, 96.0f, 48.0f}, &cool_fill);
-    if (vr != VG_OK) {
-        (void)vg_transform_pop(a->vg);
-        return vr;
-    }
-    vr = vg_draw_rect(a->vg, (vg_rect){-48.0f, -24.0f, 96.0f, 48.0f}, &edge);
-    if (vr != VG_OK) {
-        (void)vg_transform_pop(a->vg);
-        return vr;
-    }
-    tr = vg_transform_pop(a->vg);
-    if (tr != VG_OK) {
-        return tr;
-    }
-
-    return VG_OK;
+    vr = vg_draw_text(a->vg, "SOLAR DATA LINK", (vg_vec2){side.x + 16.0f, side.y + side.h - 28.0f}, 14.0f, 0.9f, &label, NULL);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_text(a->vg, "FILL + CIRCLE + CALLOUT DEMO", (vg_vec2){w * 0.06f, h * 0.83f}, 13.0f, 0.8f, &orbit, NULL);
+    if (vr != VG_OK) return vr;
+    return vg_draw_text(a->vg, "MODE 6", (vg_vec2){w * 0.06f, h * 0.79f}, 18.0f, 1.2f, &label, NULL);
 }
 
 static vg_result draw_scene_title_crawl(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float w, float h) {
@@ -2499,17 +2797,39 @@ static vg_result draw_scene_image_fx(app* a, const vg_stroke_style* main_s, floa
     s_hard.scanline_pitch_px = a->image_pitch_px + 0.7f;
     s_hard.min_line_width_px = a->image_min_width_px * 0.85f;
     s_hard.max_line_width_px = a->image_max_width_px * 0.92f;
-    vr = vg_draw_image_stylized(a->vg, &img, (vg_rect){w * 0.37f, h * 0.14f, w * 0.27f, h * 0.72f}, &s_hard);
+
+    vg_rect high_contrast_rect = {w * 0.37f, h * 0.14f, w * 0.27f, h * 0.72f};
+    if (a->svg_asset) {
+        high_contrast_rect = (vg_rect){w * 0.37f, h * 0.44f, w * 0.27f, h * 0.42f};
+    }
+    vr = vg_draw_image_stylized(a->vg, &img, high_contrast_rect, &s_hard);
     if (vr != VG_OK) return vr;
 
-    vg_image_style s_soft = s;
-    s_soft.threshold = clampf(a->image_threshold - 0.10f, 0.0f, 1.0f);
-    s_soft.contrast = a->image_contrast * 0.80f;
-    s_soft.scanline_pitch_px = a->image_pitch_px - 0.4f;
-    if (s_soft.scanline_pitch_px < 1.2f) s_soft.scanline_pitch_px = 1.2f;
-    s_soft.min_line_width_px = a->image_min_width_px * 1.20f;
-    s_soft.max_line_width_px = a->image_max_width_px * 1.22f;
-    vr = vg_draw_image_stylized(a->vg, &img, (vg_rect){w * 0.68f, h * 0.14f, w * 0.27f, h * 0.72f}, &s_soft);
+    if (a->svg_asset) {
+        vg_stroke_style svg_s = *main_s;
+        svg_s.blend = VG_BLEND_ALPHA;
+        svg_s.width_px = clampf(main_s->width_px * 0.9f, 0.8f, 2.0f);
+        svg_s.intensity = 1.0f;
+        vg_svg_draw_params sp = {
+            .dst = {w * 0.37f, h * 0.14f, w * 0.27f, h * 0.25f},
+            .preserve_aspect = 1,
+            .flip_y = 1
+        };
+        vr = vg_svg_draw(a->vg, a->svg_asset, &sp, &svg_s);
+        if (vr != VG_OK) return vr;
+    }
+
+    vg_image_style s_char = s;
+    s_char.kind = VG_IMAGE_STYLE_BLOCK_GRAPHICS;
+    s_char.threshold = clampf(a->image_threshold - 0.04f, 0.0f, 1.0f);
+    s_char.contrast = a->image_contrast * 1.05f;
+    s_char.cell_width_px = a->image_block_cell_w_px;
+    s_char.cell_height_px = a->image_block_cell_h_px;
+    s_char.block_levels = a->image_block_levels;
+    s_char.intensity = 0.95f;
+    s_char.blend = VG_BLEND_ALPHA;
+    s_char.use_boxed_glyphs = 0;
+    vr = vg_draw_image_stylized(a->vg, &img, (vg_rect){w * 0.68f, h * 0.14f, w * 0.27f, h * 0.72f}, &s_char);
     if (vr != VG_OK) return vr;
 
     vg_stroke_style label = *main_s;
@@ -2518,21 +2838,36 @@ static vg_result draw_scene_image_fx(app* a, const vg_stroke_style* main_s, floa
     label.intensity = 1.0f;
     vr = vg_draw_text(a->vg, "BASE", (vg_vec2){w * 0.17f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
     if (vr != VG_OK) return vr;
-    vr = vg_draw_text(a->vg, "HIGH CONTRAST", (vg_vec2){w * 0.44f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
+    if (a->svg_asset) {
+        vr = vg_draw_text(a->vg, "SVG PREVIEW", (vg_vec2){w * 0.44f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
+    } else {
+        vr = vg_draw_text(a->vg, "HIGH CONTRAST", (vg_vec2){w * 0.44f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
+    }
     if (vr != VG_OK) return vr;
-    vr = vg_draw_text(a->vg, "SOFT HALO", (vg_vec2){w * 0.77f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
+    vr = vg_draw_text(a->vg, "BLOCK GRAPH", (vg_vec2){w * 0.76f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
     if (vr != VG_OK) return vr;
+    if (a->svg_asset) {
+        vr = vg_draw_text(a->vg, "HIGH CONTRAST", (vg_vec2){w * 0.43f, h * 0.41f}, 12.0f, 0.8f, &label, NULL);
+        if (vr != VG_OK) return vr;
+        if (a->svg_asset_name[0] != '\0') {
+            vr = vg_draw_text(a->vg, a->svg_asset_name, (vg_vec2){w * 0.42f, h * 0.36f}, 10.0f, 0.7f, &label, NULL);
+            if (vr != VG_OK) return vr;
+        }
+    }
 
     char txt[256];
     snprintf(
         txt,
         sizeof(txt),
-        "THR %.2f  CTR %.2f  PITCH %.2f  MIN %.2f  MAX %.2f  INV %s\nTAB UI  UP/DOWN SELECT  LEFT/RIGHT ADJUST",
+        "THR %.2f CTR %.2f PITCH %.2f MIN %.2f MAX %.2f BW %.0f BH %.0f LVL %d INV %s\nTAB UI  UP/DOWN SELECT  LEFT/RIGHT ADJUST",
         a->image_threshold,
         a->image_contrast,
         a->image_pitch_px,
         a->image_min_width_px,
         a->image_max_width_px,
+        a->image_block_cell_w_px,
+        a->image_block_cell_h_px,
+        a->image_block_levels,
         a->image_invert ? "ON" : "OFF"
     );
     vg_text_layout layout;
@@ -2748,6 +3083,8 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     if (a->show_ui) {
         if (a->scene_mode == SCENE_IMAGE_FX) {
             vr = draw_image_debug_ui(a, fps);
+        } else if (a->scene_mode == SCENE_TITLE_CRAWL) {
+            vr = draw_text_debug_ui(a, fps);
         } else {
             vr = draw_debug_ui(a, &crt, fps);
         }
@@ -2786,12 +3123,17 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     pc.p0[3] = crt.bloom_radius_px;
     pc.p1[0] = crt.vignette_strength;
     pc.p1[1] = crt.barrel_distortion;
-    pc.p1[2] = crt.scanline_strength;
+    pc.p1[2] = (a->scene_mode == SCENE_IMAGE_FX) ? 0.0f : crt.scanline_strength;
     pc.p1[3] = crt.noise_strength;
     pc.p2[0] = t;
     pc.p2[1] = a->show_ui ? 1.0f : 0.0f;
     pc.p2[2] = k_ui_x / (float)a->swapchain_extent.width;
-    float ui_h = (a->scene_mode == SCENE_IMAGE_FX) ? k_ui_image_h : k_ui_h;
+    float ui_h = k_ui_h;
+    if (a->scene_mode == SCENE_IMAGE_FX) {
+        ui_h = k_ui_image_h;
+    } else if (a->scene_mode == SCENE_TITLE_CRAWL) {
+        ui_h = k_ui_text_h;
+    }
     pc.p3[0] = k_ui_w / (float)a->swapchain_extent.width;
     pc.p3[1] = ui_h / (float)a->swapchain_extent.height;
     /* UI drawing uses bottom-origin coordinates; composite UV mask expects top-origin. */
@@ -2867,6 +3209,10 @@ static void cleanup(app* a) {
         free(a->image_rgba);
         a->image_rgba = NULL;
     }
+    if (a->svg_asset) {
+        vg_svg_destroy(a->svg_asset);
+        a->svg_asset = NULL;
+    }
 #if VG_DEMO_HAS_SDL_IMAGE
     IMG_Quit();
 #endif
@@ -2927,6 +3273,9 @@ int main(void) {
     a.image_min_width_px = 0.55f;
     a.image_max_width_px = 2.35f;
     a.image_jitter_px = 0.0f;
+    a.image_block_cell_w_px = 8.0f;
+    a.image_block_cell_h_px = 6.0f;
+    a.image_block_levels = 16;
     a.image_invert = 0;
     vg_text_fx_typewriter_set_beep(&a.tty_fx, teletype_beep_cb, &a);
     vg_text_fx_typewriter_set_beep_profile(&a.tty_fx, 900.0f, 55.0f, 0.028f, 0.17f);
@@ -2948,6 +3297,7 @@ int main(void) {
     init_profile_path(&a);
     init_teletype_audio(&a);
     init_image_asset(&a);
+    init_svg_asset(&a);
 
     a.window = SDL_CreateWindow(
         "vectorgfx Vulkan example",
@@ -3007,6 +3357,8 @@ int main(void) {
                     set_scene(&a, SCENE_TITLE_CRAWL);
                 } else if (ev.key.keysym.sym == SDLK_8) {
                     set_scene(&a, SCENE_IMAGE_FX);
+                } else if (ev.key.keysym.sym == SDLK_SPACE) {
+                    cycle_svg_asset(&a, +1);
                 } else if (ev.key.keysym.sym == SDLK_F5) {
                     save_profile(&a);
                 } else if (ev.key.keysym.sym == SDLK_F9) {
