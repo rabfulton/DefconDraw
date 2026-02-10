@@ -214,6 +214,26 @@ vg_result vg_draw_text_boxed_weighted(
     float weight,
     float* out_width_px
 );
+vg_result vg_draw_text_vector_fill(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_stroke_style* style,
+    float* out_width_px
+);
+vg_result vg_draw_text_stencil_cutout(
+    vg_context* ctx,
+    const char* text,
+    vg_vec2 origin,
+    float size_px,
+    float letter_spacing_px,
+    const vg_fill_style* panel_fill,
+    const vg_stroke_style* panel_border,
+    const vg_stroke_style* text_style,
+    float* out_width_px
+);
 vg_result vg_draw_text_wrapped(
     vg_context* ctx,
     const char* text,

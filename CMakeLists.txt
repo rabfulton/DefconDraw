@@ -11,6 +11,9 @@ option(VG_BUILD_VK_SDL_EXAMPLE "Build Vulkan + SDL example" ON)
 
 add_library(vg STATIC
     src/vg.c
+    src/vg_image.c
+    src/vg_text_fx.c
+    src/vg_text_layout.c
     src/vg_ui.c
     src/vg_ui_ext.c
     src/backends/vulkan/vg_vk.c
@@ -92,6 +95,7 @@ endif()
 if(VG_BUILD_VK_SDL_EXAMPLE)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED sdl2)
+    pkg_check_modules(SDL2_IMAGE QUIET SDL2_image)
     if(Vulkan_FOUND AND GLSLANG_VALIDATOR AND XXD_EXECUTABLE)
         set(VG_DEMO_SHADER_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/demo_shaders)
         file(MAKE_DIRECTORY ${VG_DEMO_SHADER_GEN_DIR})
@@ -129,9 +133,20 @@ if(VG_BUILD_VK_SDL_EXAMPLE)
         add_executable(vg_demo_vk_sdl examples/demo_vk_sdl.c)
         add_dependencies(vg_demo_vk_sdl vg_demo_vk_shaders)
         target_compile_definitions(vg_demo_vk_sdl PRIVATE VG_DEMO_HAS_POST_SHADERS=1)
+        if(SDL2_IMAGE_FOUND)
+            target_compile_definitions(vg_demo_vk_sdl PRIVATE VG_DEMO_HAS_SDL_IMAGE=1)
+        else()
+            target_compile_definitions(vg_demo_vk_sdl PRIVATE VG_DEMO_HAS_SDL_IMAGE=0)
+        endif()
         target_include_directories(vg_demo_vk_sdl PRIVATE ${VG_DEMO_SHADER_GEN_DIR})
         target_include_directories(vg_demo_vk_sdl PRIVATE ${SDL2_INCLUDE_DIRS})
-        target_link_libraries(vg_demo_vk_sdl PRIVATE vg ${SDL2_LIBRARIES} Vulkan::Vulkan m)
+        if(SDL2_IMAGE_FOUND)
+            target_include_directories(vg_demo_vk_sdl PRIVATE ${SDL2_IMAGE_INCLUDE_DIRS})
+            target_link_libraries(vg_demo_vk_sdl PRIVATE vg ${SDL2_LIBRARIES} ${SDL2_IMAGE_LIBRARIES} Vulkan::Vulkan m)
+            target_compile_options(vg_demo_vk_sdl PRIVATE ${SDL2_IMAGE_CFLAGS_OTHER})
+        else()
+            target_link_libraries(vg_demo_vk_sdl PRIVATE vg ${SDL2_LIBRARIES} Vulkan::Vulkan m)
+        endif()
         target_compile_options(vg_demo_vk_sdl PRIVATE ${SDL2_CFLAGS_OTHER})
     endif()
 endif()

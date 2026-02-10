@@ -1,6 +1,6 @@
 # API Reference
 
-This document describes the current public API in `include/vg.h`, `include/vg_ui.h`, and `include/vg_ui_ext.h`.
+This document describes the current public API in `include/vg.h`, `include/vg_ui.h`, `include/vg_ui_ext.h`, `include/vg_image.h`, `include/vg_text_layout.h`, and `include/vg_text_fx.h`.
 
 ## Versioning
 
@@ -340,6 +340,17 @@ Notes:
 - `weight` controls chunkiness of the outline/cutout passes.
 - Values are clamped internally to `[0.25, 3.0]`.
 
+### `vg_draw_text_vector_fill(vg_context* ctx, const char* text, vg_vec2 origin, float size_px, float letter_spacing_px, const vg_stroke_style* style, float* out_width_px)`
+
+Draws stroke-font text with a filled/vector-phosphor look using layered body/fill/edge passes.
+
+### `vg_draw_text_stencil_cutout(vg_context* ctx, const char* text, vg_vec2 origin, float size_px, float letter_spacing_px, const vg_fill_style* panel_fill, const vg_stroke_style* panel_border, const vg_stroke_style* text_style, float* out_width_px)`
+
+Draws text as a cutout from a filled panel:
+- fills and outlines a panel behind the text
+- cuts the glyph interior with alpha-black text
+- adds a crisp edge pass for readability
+
 ### `vg_draw_text_wrapped(vg_context* ctx, const char* text, vg_rect bounds, float size_px, float letter_spacing_px, vg_text_align align, const vg_stroke_style* style, float* out_height_px)`
 
 Draws wrapped text constrained to a rectangle.
@@ -499,6 +510,147 @@ Pie/donut descriptor:
 ### `vg_ui_pie_chart(vg_context* ctx, const vg_ui_pie_desc* desc, const vg_stroke_style* outline_style, const vg_stroke_style* text_style)`
 
 Draws a pie/donut chart with optional percentage labels.
+
+## Image API (`vg_image.h`)
+
+### `vg_image_style_kind`
+
+- `VG_IMAGE_STYLE_MONO_SCANLINE`
+
+### `vg_image_desc`
+
+Source image descriptor:
+- `pixels_rgba8`
+- `width`, `height`
+- `stride_bytes`
+
+### `vg_image_style`
+
+Image stylization settings:
+- `kind`
+- tonal controls: `threshold`, `contrast`
+- scanline shape: `scanline_pitch_px`, `min_line_width_px`, `max_line_width_px`, `line_jitter_px`
+- output controls: `intensity`, `tint_color`, `blend`
+- palette/polarity flags: `use_crt_palette`, `invert`
+
+### `vg_draw_image_stylized(vg_context* ctx, const vg_image_desc* src, vg_rect dst, const vg_image_style* style)`
+
+Draws a stylized image inside `dst`.  
+Current implementation supports mono scanline rendering where line thickness varies with local luminance.
+
+## Text Layout API (`vg_text_layout.h`)
+
+### `vg_text_draw_mode`
+
+- `VG_TEXT_DRAW_MODE_STROKE`
+- `VG_TEXT_DRAW_MODE_BOXED`
+- `VG_TEXT_DRAW_MODE_BOXED_WEIGHTED`
+- `VG_TEXT_DRAW_MODE_VECTOR_FILL`
+- `VG_TEXT_DRAW_MODE_STENCIL_CUTOUT`
+
+### `vg_text_layout_params`
+
+Layout inputs:
+- `bounds`
+- `size_px`
+- `letter_spacing_px`
+- `line_height_px` (`<= 0` uses default `size * 1.35`)
+- `align` (`LEFT|CENTER|RIGHT`)
+
+### `vg_text_layout_line`
+
+Per-line layout output:
+- source text slice (`text_offset`, `text_length`)
+- resolved position (`x`, `y`)
+- measured width (`width_px`)
+
+### `vg_text_layout`
+
+Caller-owned layout object:
+- copied source `text`
+- `params`
+- `lines` + `line_count`
+- `content_width_px`, `content_height_px`
+
+### `vg_text_layout_reset(vg_text_layout* layout)`
+
+Releases layout-owned memory and resets fields.
+
+### `vg_text_layout_build(const char* text, const vg_text_layout_params* params, vg_text_layout* out_layout)`
+
+Builds wrapped/aligned line layout for drawing.
+
+### `vg_text_layout_draw(vg_context* ctx, const vg_text_layout* layout, vg_text_draw_mode mode, const vg_stroke_style* text_style, float boxed_weight, const vg_fill_style* panel_fill, const vg_stroke_style* panel_border)`
+
+Draws a prebuilt layout in any supported text mode.  
+For `STENCIL_CUTOUT`, `panel_fill` and `panel_border` must be provided.
+
+## Text FX API (`vg_text_fx.h`)
+
+### `vg_text_fx_typewriter`
+
+Typewriter reveal state:
+- `text`
+- `visible_chars`
+- `timer_s`
+- `char_dt_s`
+
+### `vg_text_fx_typewriter_reset(vg_text_fx_typewriter* fx)`
+
+Resets reveal state to zero visible characters.
+
+### `vg_text_fx_typewriter_set_text(vg_text_fx_typewriter* fx, const char* text)`
+
+Assigns source text and resets reveal state.
+
+### `vg_text_fx_typewriter_set_rate(vg_text_fx_typewriter* fx, float char_dt_s)`
+
+Sets time per revealed character (`seconds/char`).
+
+### `vg_text_fx_typewriter_set_beep(vg_text_fx_typewriter* fx, vg_text_fx_beep_fn fn, void* user)`
+
+Sets optional callback invoked when printable characters are revealed.
+
+### `vg_text_fx_typewriter_set_beep_profile(vg_text_fx_typewriter* fx, float base_hz, float step_hz, float dur_s, float amp)`
+
+Configures optional beep parameters passed to the callback.
+
+### `vg_text_fx_typewriter_enable_beep(vg_text_fx_typewriter* fx, int enabled)`
+
+Enables/disables callback-based teletype beep events.
+
+### `vg_text_fx_typewriter_update(vg_text_fx_typewriter* fx, float dt_s)`
+
+Advances reveal state by delta time and returns number of newly revealed chars.
+
+### `vg_text_fx_typewriter_copy_visible(const vg_text_fx_typewriter* fx, char* out, size_t out_cap)`
+
+Copies currently visible prefix into caller buffer and null-terminates.
+
+### `vg_text_fx_marquee`
+
+Horizontal marquee state:
+- `text`
+- `offset_px`
+- `speed_px_s`
+- `gap_px`
+
+### `vg_text_fx_marquee_reset(vg_text_fx_marquee* fx)`
+### `vg_text_fx_marquee_set_text(vg_text_fx_marquee* fx, const char* text)`
+### `vg_text_fx_marquee_set_speed(vg_text_fx_marquee* fx, float speed_px_s)`
+### `vg_text_fx_marquee_set_gap(vg_text_fx_marquee* fx, float gap_px)`
+### `vg_text_fx_marquee_update(vg_text_fx_marquee* fx, float dt_s)`
+
+State/configuration helpers for scrolling text.
+
+### `vg_text_fx_marquee_draw(...)`
+
+Draws horizontally scrolling text inside a box with optional:
+- background fill (`panel_fill`)
+- border stroke (`panel_border`)
+- side clip masks (`clip_fill`)
+
+Supports all text draw modes via `vg_text_draw_mode`.
 
 ## Debug Raster API
 

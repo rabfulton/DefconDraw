@@ -1,9 +1,15 @@
 #include "vg.h"
+#include "vg_image.h"
+#include "vg_text_fx.h"
+#include "vg_text_layout.h"
 #include "vg_ui.h"
 #include "vg_ui_ext.h"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
+#if VG_DEMO_HAS_SDL_IMAGE
+#include <SDL2/SDL_image.h>
+#endif
 #include <vulkan/vulkan.h>
 
 #include <math.h>
@@ -14,6 +20,9 @@
 
 #ifndef VG_DEMO_HAS_POST_SHADERS
 #define VG_DEMO_HAS_POST_SHADERS 0
+#endif
+#ifndef VG_DEMO_HAS_SDL_IMAGE
+#define VG_DEMO_HAS_SDL_IMAGE 0
 #endif
 
 #if VG_DEMO_HAS_POST_SHADERS
@@ -101,6 +110,7 @@ typedef struct app {
 
     int show_ui;
     int selected_param;
+    int selected_image_param;
     float main_line_width;
     float fps_smoothed;
     int prev_adjust_dir;
@@ -112,10 +122,7 @@ typedef struct app {
     star3 stars[320];
     int stars_initialized;
 
-    const char* tty_text;
-    size_t tty_visible;
-    float tty_timer;
-    float tty_char_dt;
+    vg_text_fx_typewriter tty_fx;
 
     SDL_AudioDeviceID audio_dev;
     int audio_ready;
@@ -130,6 +137,18 @@ typedef struct app {
     float cpu_hist_buf[180];
     float net_hist_buf[180];
     float fft_bins[48];
+    uint8_t* image_rgba;
+    uint32_t image_w;
+    uint32_t image_h;
+    uint32_t image_stride;
+    float image_threshold;
+    float image_contrast;
+    float image_pitch_px;
+    float image_min_width_px;
+    float image_max_width_px;
+    float image_jitter_px;
+    int image_invert;
+    vg_text_fx_marquee scene7_marquee;
 } app;
 
 enum {
@@ -150,11 +169,23 @@ enum {
     UI_PARAM_COUNT = 14
 };
 
+enum {
+    IMAGE_UI_PARAM_THRESHOLD = 0,
+    IMAGE_UI_PARAM_CONTRAST = 1,
+    IMAGE_UI_PARAM_SCAN_PITCH = 2,
+    IMAGE_UI_PARAM_MIN_WIDTH = 3,
+    IMAGE_UI_PARAM_MAX_WIDTH = 4,
+    IMAGE_UI_PARAM_JITTER = 5,
+    IMAGE_UI_PARAM_INVERT = 6,
+    IMAGE_UI_PARAM_COUNT = 7
+};
+
 static const float k_ui_x = 24.0f;
 static const float k_ui_y = 24.0f;
 static const float k_ui_w = 560.0f;
 static const float k_ui_row_step = 40.0f;
 static const float k_ui_h = 70.0f + (float)UI_PARAM_COUNT * 40.0f + 56.0f;
+static const float k_ui_image_h = 70.0f + (float)IMAGE_UI_PARAM_COUNT * 40.0f + 56.0f;
 
 enum {
     SCENE_CLASSIC = 0,
@@ -164,7 +195,8 @@ enum {
     SCENE_SYNTHWAVE = 4,
     SCENE_FILL_PRIMS = 5,
     SCENE_TITLE_CRAWL = 6,
-    SCENE_COUNT = 7
+    SCENE_IMAGE_FX = 7,
+    SCENE_COUNT = 8
 };
 
 static int check_vk(VkResult res, const char* what) {
@@ -245,9 +277,18 @@ static void queue_teletype_beep(app* a, float freq_hz, float dur_s, float amp) {
     free(samples);
 }
 
+static void teletype_beep_cb(void* user, char ch, float freq_hz, float dur_s, float amp) {
+    (void)ch;
+    app* a = (app*)user;
+    if (!a) {
+        return;
+    }
+    queue_teletype_beep(a, freq_hz, dur_s, amp);
+}
+
 static void reset_teletype(app* a) {
-    a->tty_visible = 0u;
-    a->tty_timer = 0.02f;
+    vg_text_fx_typewriter_reset(&a->tty_fx);
+    a->tty_fx.timer_s = 0.02f;
 }
 
 static void set_scene(app* a, int mode) {
@@ -258,14 +299,18 @@ static void set_scene(app* a, int mode) {
         "STATUS READY\nMODE 4 SURFACE PLOT\n3D FUNCTION GRID TEST",
         "STATUS READY\nMODE 5 SYNTH TERRAIN\nHORIZON + PARALLAX TEST",
         "STATUS READY\nMODE 6 FILL PRIMITIVES\nCONVEX + RECT + CIRCLE TEST",
-        "STATUS READY\nMODE 7 TITLE CRAWL\nBOXED FONT + ROTARY TEST"
+        "STATUS READY\nMODE 7 TITLE CRAWL\nBOXED FONT + ROTARY TEST",
+        "STATUS READY\nMODE 8 IMAGE FX TEST\nMONO SCANLINE IMPORT"
     };
     if (mode < 0 || mode >= SCENE_COUNT) {
         return;
     }
     a->scene_mode = mode;
-    a->tty_text = k_scene_text[mode];
+    vg_text_fx_typewriter_set_text(&a->tty_fx, k_scene_text[mode]);
     reset_teletype(a);
+    if (mode == SCENE_TITLE_CRAWL) {
+        vg_text_fx_marquee_reset(&a->scene7_marquee);
+    }
 }
 
 static void init_teletype_audio(app* a) {
@@ -283,6 +328,51 @@ static void init_teletype_audio(app* a) {
     } else {
         a->audio_ready = 0;
     }
+}
+
+static void init_image_asset(app* a) {
+#if VG_DEMO_HAS_SDL_IMAGE
+    static const char* k_candidates[] = {
+        "nick.jpg",
+        "assets/nick.jpg",
+        "../nick.jpg",
+        "../assets/nick.jpg",
+        "../../nick.jpg"
+    };
+    SDL_Surface* src = NULL;
+    const char* loaded_path = NULL;
+    for (size_t i = 0; i < sizeof(k_candidates) / sizeof(k_candidates[0]); ++i) {
+        src = IMG_Load(k_candidates[i]);
+        if (src) {
+            loaded_path = k_candidates[i];
+            break;
+        }
+    }
+    if (!src) {
+        fprintf(stderr, "IMG_Load nick.jpg failed: %s\n", IMG_GetError());
+        return;
+    }
+    fprintf(stderr, "image loaded: %s\n", loaded_path);
+    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(src);
+    if (!rgba) {
+        fprintf(stderr, "SDL_ConvertSurfaceFormat RGBA32 failed: %s\n", SDL_GetError());
+        return;
+    }
+    size_t bytes = (size_t)rgba->pitch * (size_t)rgba->h;
+    a->image_rgba = (uint8_t*)malloc(bytes);
+    if (!a->image_rgba) {
+        SDL_FreeSurface(rgba);
+        return;
+    }
+    memcpy(a->image_rgba, rgba->pixels, bytes);
+    a->image_w = (uint32_t)rgba->w;
+    a->image_h = (uint32_t)rgba->h;
+    a->image_stride = (uint32_t)rgba->pitch;
+    SDL_FreeSurface(rgba);
+#else
+    (void)a;
+#endif
 }
 
 static void init_starfield(app* a) {
@@ -403,21 +493,11 @@ static int load_profile(app* a) {
 }
 
 static void update_teletype(app* a, float dt) {
-    if (!a->tty_text) {
+    if (!a->tty_fx.text) {
         return;
     }
-    size_t n = strlen(a->tty_text);
-    if (a->tty_visible >= n) {
-        return;
-    }
-    a->tty_timer -= dt;
-    while (a->tty_timer <= 0.0f && a->tty_visible < n) {
-        char c = a->tty_text[a->tty_visible++];
-        a->tty_timer += a->tty_char_dt;
-        if (c > ' ' && c != '\n') {
-            queue_teletype_beep(a, 900.0f + (float)((unsigned char)c % 7u) * 55.0f, 0.028f, 0.17f);
-        }
-    }
+    (void)vg_text_fx_typewriter_update(&a->tty_fx, dt);
+    vg_text_fx_marquee_update(&a->scene7_marquee, dt);
 }
 
 static uint32_t find_memory_type(app* a, uint32_t type_bits, VkMemoryPropertyFlags required) {
@@ -1612,19 +1692,69 @@ static void step_selected_param(app* a, int dir) {
     }
 }
 
+static void apply_selected_image_tweak(app* a, int dir) {
+    switch (a->selected_image_param) {
+        case IMAGE_UI_PARAM_THRESHOLD:
+            a->image_threshold = clampf(a->image_threshold + 0.02f * (float)dir, 0.0f, 1.0f);
+            break;
+        case IMAGE_UI_PARAM_CONTRAST:
+            a->image_contrast = clampf(a->image_contrast + 0.08f * (float)dir, 0.25f, 4.0f);
+            break;
+        case IMAGE_UI_PARAM_SCAN_PITCH:
+            a->image_pitch_px = clampf(a->image_pitch_px + 0.10f * (float)dir, 1.0f, 10.0f);
+            break;
+        case IMAGE_UI_PARAM_MIN_WIDTH:
+            a->image_min_width_px = clampf(a->image_min_width_px + 0.05f * (float)dir, 0.2f, 8.0f);
+            if (a->image_max_width_px < a->image_min_width_px) {
+                a->image_max_width_px = a->image_min_width_px;
+            }
+            break;
+        case IMAGE_UI_PARAM_MAX_WIDTH:
+            a->image_max_width_px = clampf(a->image_max_width_px + 0.06f * (float)dir, a->image_min_width_px, 12.0f);
+            break;
+        case IMAGE_UI_PARAM_JITTER:
+            a->image_jitter_px = clampf(a->image_jitter_px + 0.05f * (float)dir, 0.0f, 3.0f);
+            break;
+        case IMAGE_UI_PARAM_INVERT:
+            if (dir != 0) {
+                a->image_invert = !a->image_invert;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static void step_selected_image_param(app* a, int dir) {
+    if (dir > 0) {
+        a->selected_image_param = (a->selected_image_param + 1) % IMAGE_UI_PARAM_COUNT;
+    } else if (dir < 0) {
+        a->selected_image_param = (a->selected_image_param + IMAGE_UI_PARAM_COUNT - 1) % IMAGE_UI_PARAM_COUNT;
+    }
+}
+
 static void handle_ui_hold(app* a, float dt) {
     const Uint8* ks = SDL_GetKeyboardState(NULL);
     int adjust_dir = (ks[SDL_SCANCODE_RIGHT] ? 1 : 0) - (ks[SDL_SCANCODE_LEFT] ? 1 : 0);
     int nav_dir = (ks[SDL_SCANCODE_UP] ? 1 : 0) - (ks[SDL_SCANCODE_DOWN] ? 1 : 0);
+    int image_ui = (a->scene_mode == SCENE_IMAGE_FX);
 
     if (adjust_dir != 0) {
         if (adjust_dir != a->prev_adjust_dir) {
-            apply_selected_tweak(a, adjust_dir);
+            if (image_ui) {
+                apply_selected_image_tweak(a, adjust_dir);
+            } else {
+                apply_selected_tweak(a, adjust_dir);
+            }
             a->adjust_repeat_timer = 0.24f;
         } else {
             a->adjust_repeat_timer -= dt;
             while (a->adjust_repeat_timer <= 0.0f) {
-                apply_selected_tweak(a, adjust_dir);
+                if (image_ui) {
+                    apply_selected_image_tweak(a, adjust_dir);
+                } else {
+                    apply_selected_tweak(a, adjust_dir);
+                }
                 a->adjust_repeat_timer += 0.06f;
             }
         }
@@ -1635,12 +1765,20 @@ static void handle_ui_hold(app* a, float dt) {
 
     if (nav_dir != 0) {
         if (nav_dir != a->prev_nav_dir) {
-            step_selected_param(a, nav_dir);
+            if (image_ui) {
+                step_selected_image_param(a, nav_dir);
+            } else {
+                step_selected_param(a, nav_dir);
+            }
             a->nav_repeat_timer = 0.24f;
         } else {
             a->nav_repeat_timer -= dt;
             while (a->nav_repeat_timer <= 0.0f) {
-                step_selected_param(a, nav_dir);
+                if (image_ui) {
+                    step_selected_image_param(a, nav_dir);
+                } else {
+                    step_selected_param(a, nav_dir);
+                }
                 a->nav_repeat_timer += 0.09f;
             }
         }
@@ -1727,10 +1865,81 @@ static vg_result draw_debug_ui(app* a, const vg_crt_profile* crt, float fps) {
     vg_ui_slider_panel_desc ui = {
         .rect = {k_ui_x, k_ui_y, k_ui_w, k_ui_h},
         .title_line_0 = "TAB UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
-        .title_line_1 = "1..7 SCENE  R REPLAY TTY  F5 SAVE  F9 LOAD",
+        .title_line_1 = "1..8 SCENE  R REPLAY TTY  F5 SAVE  F9 LOAD",
         .footer_line = footer,
         .items = items,
         .item_count = UI_PARAM_COUNT,
+        .row_height_px = k_ui_row_step,
+        .label_size_px = 11.0f,
+        .value_size_px = 11.5f,
+        .border_style = panel,
+        .text_style = text,
+        .track_style = text,
+        .knob_style = text
+    };
+    return vg_ui_draw_slider_panel(a->vg, &ui);
+}
+
+static vg_result draw_image_debug_ui(app* a, float fps) {
+    vg_stroke_style panel = {
+        .width_px = 2.0f,
+        .intensity = 0.82f,
+        .color = {0.18f, 0.78f, 0.98f, 0.92f},
+        .cap = VG_LINE_CAP_BUTT,
+        .join = VG_LINE_JOIN_BEVEL,
+        .miter_limit = 2.0f,
+        .blend = VG_BLEND_ALPHA
+    };
+    vg_stroke_style text = panel;
+    text.width_px = 1.7f;
+    text.intensity = 1.05f;
+    text.cap = VG_LINE_CAP_ROUND;
+    text.join = VG_LINE_JOIN_ROUND;
+    text.blend = VG_BLEND_ALPHA;
+
+    static const char* labels[IMAGE_UI_PARAM_COUNT] = {
+        "THRESHOLD",
+        "CONTRAST",
+        "SCAN PITCH",
+        "LINE MIN",
+        "LINE MAX",
+        "JITTER",
+        "INVERT"
+    };
+    float values[IMAGE_UI_PARAM_COUNT] = {
+        a->image_threshold,
+        a->image_contrast,
+        a->image_pitch_px,
+        a->image_min_width_px,
+        a->image_max_width_px,
+        a->image_jitter_px,
+        a->image_invert ? 1.0f : 0.0f
+    };
+    float values_norm[IMAGE_UI_PARAM_COUNT] = {
+        norm_range(a->image_threshold, 0.0f, 1.0f),
+        norm_range(a->image_contrast, 0.25f, 4.0f),
+        norm_range(a->image_pitch_px, 1.0f, 10.0f),
+        norm_range(a->image_min_width_px, 0.2f, 8.0f),
+        norm_range(a->image_max_width_px, 0.2f, 12.0f),
+        norm_range(a->image_jitter_px, 0.0f, 3.0f),
+        a->image_invert ? 1.0f : 0.0f
+    };
+    vg_ui_slider_item items[IMAGE_UI_PARAM_COUNT];
+    for (int i = 0; i < IMAGE_UI_PARAM_COUNT; ++i) {
+        items[i].label = labels[i];
+        items[i].value_01 = values_norm[i];
+        items[i].value_display = values[i];
+        items[i].selected = (i == a->selected_image_param);
+    }
+    char footer[64];
+    snprintf(footer, sizeof(footer), "FPS %.1f", fps);
+    vg_ui_slider_panel_desc ui = {
+        .rect = {k_ui_x, k_ui_y, k_ui_w, k_ui_image_h},
+        .title_line_0 = "IMAGE UI  UP DOWN SELECT  LEFT RIGHT ADJUST",
+        .title_line_1 = "SCENE 8 IMAGE  TAB TOGGLE UI",
+        .footer_line = footer,
+        .items = items,
+        .item_count = IMAGE_UI_PARAM_COUNT,
         .row_height_px = k_ui_row_step,
         .label_size_px = 11.0f,
         .value_size_px = 11.5f,
@@ -2198,7 +2407,150 @@ static vg_result draw_scene_title_crawl(app* a, const vg_stroke_style* halo_s, c
     vg_vec2 beam[2] = {{w * 0.18f, h * 0.64f}, {w * 0.82f, h * 0.64f}};
     vr = vg_draw_polyline(a->vg, beam, 2, halo_s, 0);
     if (vr != VG_OK) return vr;
-    return vg_draw_polyline(a->vg, beam, 2, main_s, 0);
+    vr = vg_draw_polyline(a->vg, beam, 2, main_s, 0);
+    if (vr != VG_OK) return vr;
+
+    vg_stroke_style cmp = *main_s;
+    cmp.blend = VG_BLEND_ALPHA;
+    cmp.width_px = 1.4f;
+    cmp.intensity = 1.0f;
+    vg_fill_style cmp_panel_fill = {
+        .intensity = 0.95f,
+        .color = {0.14f, 0.68f, 0.30f, 0.72f},
+        .blend = VG_BLEND_ALPHA
+    };
+    vg_stroke_style cmp_panel_border = cmp;
+    cmp_panel_border.width_px = 1.1f;
+    cmp_panel_border.intensity = 0.9f;
+
+    float x = w * 0.06f;
+    float y = h * 0.18f;
+    vr = vg_draw_text(a->vg, "TEXT MODE 1", (vg_vec2){x, y}, 22.0f, 1.2f, &cmp, NULL);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_text_boxed(a->vg, "TEXT MODE 2", (vg_vec2){x, y + 34.0f}, 22.0f, 1.2f, &cmp, NULL);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_text_vector_fill(a->vg, "TEXT MODE 3", (vg_vec2){x, y + 68.0f}, 22.0f, 1.2f, &cmp, NULL);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_text_stencil_cutout(
+        a->vg,
+        "TEXT MODE 4",
+        (vg_vec2){x, y + 102.0f},
+        22.0f,
+        1.2f,
+        &cmp_panel_fill,
+        &cmp_panel_border,
+        &cmp,
+        NULL
+    );
+    if (vr != VG_OK) return vr;
+
+    vg_fill_style marq_bg = {.intensity = 1.0f, .color = {0.02f, 0.10f, 0.06f, 0.92f}, .blend = VG_BLEND_ALPHA};
+    vg_stroke_style marq_bd = cmp;
+    marq_bd.width_px = 1.2f;
+    marq_bd.intensity = 0.85f;
+    vg_fill_style marq_clip = {.intensity = 1.0f, .color = {0.0f, 0.0f, 0.0f, 1.0f}, .blend = VG_BLEND_ALPHA};
+    return vg_text_fx_marquee_draw(
+        a->vg,
+        &a->scene7_marquee,
+        (vg_rect){w * 0.06f, h * 0.05f, w * 0.52f, 28.0f},
+        14.0f,
+        0.8f,
+        VG_TEXT_DRAW_MODE_STROKE,
+        &cmp,
+        1.0f,
+        &marq_bg,
+        &marq_bd,
+        &marq_clip
+    );
+}
+
+static vg_result draw_scene_image_fx(app* a, const vg_stroke_style* main_s, float w, float h) {
+    if (!a->image_rgba || a->image_w == 0u || a->image_h == 0u) {
+        return vg_draw_text(a->vg, "NICK.JPG NOT LOADED", (vg_vec2){w * 0.30f, h * 0.52f}, 20.0f, 1.2f, main_s, NULL);
+    }
+
+    vg_image_desc img = {
+        .pixels_rgba8 = a->image_rgba,
+        .width = a->image_w,
+        .height = a->image_h,
+        .stride_bytes = a->image_stride
+    };
+    vg_image_style s = {
+        .kind = VG_IMAGE_STYLE_MONO_SCANLINE,
+        .threshold = a->image_threshold,
+        .contrast = a->image_contrast,
+        .scanline_pitch_px = a->image_pitch_px,
+        .min_line_width_px = a->image_min_width_px,
+        .max_line_width_px = a->image_max_width_px,
+        .line_jitter_px = a->image_jitter_px,
+        .intensity = 1.0f,
+        .tint_color = {0.22f, 1.0f, 0.40f, 1.0f},
+        .blend = VG_BLEND_ADDITIVE,
+        .use_crt_palette = 1,
+        .invert = a->image_invert
+    };
+
+    vg_result vr = vg_draw_image_stylized(a->vg, &img, (vg_rect){w * 0.06f, h * 0.14f, w * 0.27f, h * 0.72f}, &s);
+    if (vr != VG_OK) return vr;
+
+    vg_image_style s_hard = s;
+    s_hard.threshold = clampf(a->image_threshold + 0.08f, 0.0f, 1.0f);
+    s_hard.contrast = a->image_contrast * 1.25f;
+    s_hard.scanline_pitch_px = a->image_pitch_px + 0.7f;
+    s_hard.min_line_width_px = a->image_min_width_px * 0.85f;
+    s_hard.max_line_width_px = a->image_max_width_px * 0.92f;
+    vr = vg_draw_image_stylized(a->vg, &img, (vg_rect){w * 0.37f, h * 0.14f, w * 0.27f, h * 0.72f}, &s_hard);
+    if (vr != VG_OK) return vr;
+
+    vg_image_style s_soft = s;
+    s_soft.threshold = clampf(a->image_threshold - 0.10f, 0.0f, 1.0f);
+    s_soft.contrast = a->image_contrast * 0.80f;
+    s_soft.scanline_pitch_px = a->image_pitch_px - 0.4f;
+    if (s_soft.scanline_pitch_px < 1.2f) s_soft.scanline_pitch_px = 1.2f;
+    s_soft.min_line_width_px = a->image_min_width_px * 1.20f;
+    s_soft.max_line_width_px = a->image_max_width_px * 1.22f;
+    vr = vg_draw_image_stylized(a->vg, &img, (vg_rect){w * 0.68f, h * 0.14f, w * 0.27f, h * 0.72f}, &s_soft);
+    if (vr != VG_OK) return vr;
+
+    vg_stroke_style label = *main_s;
+    label.blend = VG_BLEND_ALPHA;
+    label.width_px = 1.2f;
+    label.intensity = 1.0f;
+    vr = vg_draw_text(a->vg, "BASE", (vg_vec2){w * 0.17f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_text(a->vg, "HIGH CONTRAST", (vg_vec2){w * 0.44f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
+    if (vr != VG_OK) return vr;
+    vr = vg_draw_text(a->vg, "SOFT HALO", (vg_vec2){w * 0.77f, h * 0.11f}, 12.0f, 0.8f, &label, NULL);
+    if (vr != VG_OK) return vr;
+
+    char txt[256];
+    snprintf(
+        txt,
+        sizeof(txt),
+        "THR %.2f  CTR %.2f  PITCH %.2f  MIN %.2f  MAX %.2f  INV %s\nTAB UI  UP/DOWN SELECT  LEFT/RIGHT ADJUST",
+        a->image_threshold,
+        a->image_contrast,
+        a->image_pitch_px,
+        a->image_min_width_px,
+        a->image_max_width_px,
+        a->image_invert ? "ON" : "OFF"
+    );
+    vg_text_layout layout;
+    memset(&layout, 0, sizeof(layout));
+    vg_text_layout_params lp = {
+        .bounds = {w * 0.08f, h * 0.04f, w * 0.84f, 40.0f},
+        .size_px = 12.0f,
+        .letter_spacing_px = 0.8f,
+        .line_height_px = 15.5f,
+        .align = VG_TEXT_ALIGN_LEFT
+    };
+    vr = vg_text_layout_build(txt, &lp, &layout);
+    if (vr != VG_OK) {
+        return vr;
+    }
+    vr = vg_text_layout_draw(a->vg, &layout, VG_TEXT_DRAW_MODE_STROKE, &label, 1.0f, NULL, NULL);
+    vg_text_layout_reset(&layout);
+    return vr;
 }
 
 static vg_result draw_scene_mode(app* a, const vg_stroke_style* halo_s, const vg_stroke_style* main_s, float t, float dt, float w, float h, float cx, float cy, float jx, float jy) {
@@ -2215,6 +2567,8 @@ static vg_result draw_scene_mode(app* a, const vg_stroke_style* halo_s, const vg
             return draw_scene_fill_prims(a, t, w, h);
         case SCENE_TITLE_CRAWL:
             return draw_scene_title_crawl(a, halo_s, main_s, t, w, h);
+        case SCENE_IMAGE_FX:
+            return draw_scene_image_fx(a, main_s, w, h);
         case SCENE_CLASSIC:
         default:
             return draw_scene_classic(a, halo_s, main_s, t, cx, cy, jx, jy);
@@ -2232,20 +2586,11 @@ static vg_result draw_teletype_overlay(app* a, float w, float h) {
         .miter_limit = 2.0f,
         .blend = VG_BLEND_ALPHA
     };
-    if (!a->tty_text) {
+    if (!a->tty_fx.text) {
         return VG_OK;
     }
-    size_t n = a->tty_visible;
-    size_t src_len = strlen(a->tty_text);
-    if (n > src_len) {
-        n = src_len;
-    }
     char buf[640];
-    if (n >= sizeof(buf)) {
-        n = sizeof(buf) - 1u;
-    }
-    memcpy(buf, a->tty_text, n);
-    buf[n] = '\0';
+    (void)vg_text_fx_typewriter_copy_visible(&a->tty_fx, buf, sizeof(buf));
 
     float x0 = 40.0f;
     float y0 = h - 44.0f;
@@ -2401,7 +2746,11 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     }
 
     if (a->show_ui) {
-        vr = draw_debug_ui(a, &crt, fps);
+        if (a->scene_mode == SCENE_IMAGE_FX) {
+            vr = draw_image_debug_ui(a, fps);
+        } else {
+            vr = draw_debug_ui(a, &crt, fps);
+        }
         if (vr != VG_OK) {
             fprintf(stderr, "draw_debug_ui failed: %s\n", vg_result_string(vr));
             return FRAME_FAIL;
@@ -2442,10 +2791,11 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
     pc.p2[0] = t;
     pc.p2[1] = a->show_ui ? 1.0f : 0.0f;
     pc.p2[2] = k_ui_x / (float)a->swapchain_extent.width;
+    float ui_h = (a->scene_mode == SCENE_IMAGE_FX) ? k_ui_image_h : k_ui_h;
     pc.p3[0] = k_ui_w / (float)a->swapchain_extent.width;
-    pc.p3[1] = k_ui_h / (float)a->swapchain_extent.height;
+    pc.p3[1] = ui_h / (float)a->swapchain_extent.height;
     /* UI drawing uses bottom-origin coordinates; composite UV mask expects top-origin. */
-    pc.p2[3] = 1.0f - ((k_ui_y + k_ui_h) / (float)a->swapchain_extent.height);
+    pc.p2[3] = 1.0f - ((k_ui_y + ui_h) / (float)a->swapchain_extent.height);
     if (pc.p2[3] < 0.0f) {
         pc.p2[3] = 0.0f;
     }
@@ -2513,6 +2863,13 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
 }
 
 static void cleanup(app* a) {
+    if (a->image_rgba) {
+        free(a->image_rgba);
+        a->image_rgba = NULL;
+    }
+#if VG_DEMO_HAS_SDL_IMAGE
+    IMG_Quit();
+#endif
     if (a->audio_dev != 0) {
         SDL_CloseAudioDevice(a->audio_dev);
         a->audio_dev = 0;
@@ -2554,23 +2911,43 @@ int main(void) {
     memset(&a, 0, sizeof(a));
     a.show_ui = 0;
     a.selected_param = 0;
+    a.selected_image_param = 0;
     a.main_line_width = 1.5f;
     a.boxed_font_weight = 0.25f;
-    a.tty_char_dt = 0.050f;
+    vg_text_fx_typewriter_set_rate(&a.tty_fx, 0.050f);
     a.cpu_hist.data = a.cpu_hist_buf;
     a.cpu_hist.capacity = sizeof(a.cpu_hist_buf) / sizeof(a.cpu_hist_buf[0]);
     vg_ui_history_reset(&a.cpu_hist);
     a.net_hist.data = a.net_hist_buf;
     a.net_hist.capacity = sizeof(a.net_hist_buf) / sizeof(a.net_hist_buf[0]);
     vg_ui_history_reset(&a.net_hist);
+    a.image_threshold = 0.47f;
+    a.image_contrast = 1.45f;
+    a.image_pitch_px = 2.6f;
+    a.image_min_width_px = 0.55f;
+    a.image_max_width_px = 2.35f;
+    a.image_jitter_px = 0.0f;
+    a.image_invert = 0;
+    vg_text_fx_typewriter_set_beep(&a.tty_fx, teletype_beep_cb, &a);
+    vg_text_fx_typewriter_set_beep_profile(&a.tty_fx, 900.0f, 55.0f, 0.028f, 0.17f);
+    vg_text_fx_typewriter_enable_beep(&a.tty_fx, 1);
+    vg_text_fx_marquee_set_text(&a.scene7_marquee, "MARQUEE HELPER: LONG TEXT SCROLLS WITHIN BOX   ");
+    vg_text_fx_marquee_set_speed(&a.scene7_marquee, 70.0f);
+    vg_text_fx_marquee_set_gap(&a.scene7_marquee, 48.0f);
     set_scene(&a, SCENE_WIREFRAME_CUBE);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+#if VG_DEMO_HAS_SDL_IMAGE
+    if ((IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG) & (IMG_INIT_JPG | IMG_INIT_PNG)) == 0) {
+        fprintf(stderr, "IMG_Init failed: %s\n", IMG_GetError());
+    }
+#endif
     init_profile_path(&a);
     init_teletype_audio(&a);
+    init_image_asset(&a);
 
     a.window = SDL_CreateWindow(
         "vectorgfx Vulkan example",
@@ -2628,6 +3005,8 @@ int main(void) {
                     set_scene(&a, SCENE_FILL_PRIMS);
                 } else if (ev.key.keysym.sym == SDLK_7) {
                     set_scene(&a, SCENE_TITLE_CRAWL);
+                } else if (ev.key.keysym.sym == SDLK_8) {
+                    set_scene(&a, SCENE_IMAGE_FX);
                 } else if (ev.key.keysym.sym == SDLK_F5) {
                     save_profile(&a);
                 } else if (ev.key.keysym.sym == SDLK_F9) {
