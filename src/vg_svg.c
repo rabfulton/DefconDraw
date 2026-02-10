@@ -1,4 +1,5 @@
 #include "vg_svg.h"
+#include "vg_palette.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -489,6 +490,16 @@ vg_result vg_svg_draw(
     }
     float fill_intensity = params->fill_intensity > 0.0f ? params->fill_intensity : 1.0f;
     float stroke_intensity = params->stroke_intensity > 0.0f ? params->stroke_intensity : 1.0f;
+    const vg_color* pal = params->palette;
+    uint32_t pal_count = params->palette_count;
+    vg_palette ctx_pal;
+    if ((!pal || pal_count == 0u) && params->use_context_palette) {
+        vg_get_palette(ctx, &ctx_pal);
+        if (ctx_pal.count > 0u) {
+            pal = &ctx_pal.entries[0].color;
+            pal_count = ctx_pal.count;
+        }
+    }
 
     float sx = params->dst.w / asset->bounds.w;
     float sy = params->dst.h / asset->bounds.h;
@@ -519,7 +530,7 @@ vg_result vg_svg_draw(
                 fill.color = fm->fill_color;
                 fill.blend = VG_BLEND_ALPHA;
             }
-            fill.color = svg_quantize_palette(fill.color, params->palette, params->palette_count);
+            fill.color = svg_quantize_palette(fill.color, pal, pal_count);
             fill.color.a = svg_clampf(fill.color.a, 0.0f, 1.0f);
             for (uint32_t t = 0; t < fm->tri_count; ++t) {
                 vg_vec2 tri[3];
@@ -567,7 +578,7 @@ vg_result vg_svg_draw(
                 draw_s.width_px = svg_clampf(stroke.width_px * 0.9f, 0.6f, 6.0f);
                 draw_s.blend = VG_BLEND_ALPHA;
             }
-            draw_s.color = svg_quantize_palette(draw_s.color, params->palette, params->palette_count);
+            draw_s.color = svg_quantize_palette(draw_s.color, pal, pal_count);
             draw_s.intensity *= stroke_intensity;
             draw_s.width_px = svg_clampf(draw_s.width_px, 0.3f, 24.0f);
             vg_result r = vg_draw_polyline(ctx, tmp, pl->count, &draw_s, pl->closed);

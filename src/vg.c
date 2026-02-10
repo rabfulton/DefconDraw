@@ -1,5 +1,6 @@
 #include "vg.h"
 #include "vg_internal.h"
+#include "vg_palette.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -408,6 +409,7 @@ vg_result vg_context_create(const vg_context_desc* desc, vg_context** out_ctx) {
     ctx->desc = *desc;
     ctx->crt = vg_crt_profile_for_preset(VG_CRT_PRESET_WOPR);
     vg_retro_from_crt(&ctx->retro, &ctx->crt);
+    vg_palette_make_wopr(&ctx->palette);
     ctx->transform = vg_mat_identity();
     ctx->transform_stack_count = 0u;
 

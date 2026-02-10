@@ -1,6 +1,6 @@
 # API Reference
 
-This document describes the current public API in `include/vg.h`, `include/vg_ui.h`, `include/vg_ui_ext.h`, `include/vg_image.h`, `include/vg_text_layout.h`, and `include/vg_text_fx.h`.
+This document describes the current public API in `include/vg.h`, `include/vg_palette.h`, `include/vg_pointer.h`, `include/vg_ui.h`, `include/vg_ui_ext.h`, `include/vg_image.h`, `include/vg_text_layout.h`, and `include/vg_text_fx.h`.
 
 ## Versioning
 
@@ -104,6 +104,59 @@ Unified display-look profile for retro tuning.
 - `VG_CRT_PRESET_CLEAN_VECTOR`
 - `VG_CRT_PRESET_WOPR`
 - `VG_CRT_PRESET_HEAVY_CRT`
+
+## Palette API (`vg_palette.h`)
+
+### Types
+
+- `VG_PALETTE_MAX_ENTRIES` (`64`)
+- `VG_PALETTE_NAME_MAX` (`24`)
+- `vg_palette_entry`: `{ color, name }`
+- `vg_palette`: fixed-capacity palette table with `count`
+
+### Palette Utility Functions
+
+- `vg_palette_init(vg_palette* palette)`
+- `vg_palette_make_wopr(vg_palette* palette)`
+- `vg_palette_set_entry(vg_palette* palette, uint32_t index, vg_color color, const char* name)`
+- `vg_palette_set_color(vg_palette* palette, uint32_t index, vg_color color)`
+- `vg_palette_set_name(vg_palette* palette, uint32_t index, const char* name)`
+- `vg_palette_get_color(const vg_palette* palette, uint32_t index, vg_color* out_color)`
+- `vg_palette_get_name(const vg_palette* palette, uint32_t index)`
+- `vg_palette_find(const vg_palette* palette, const char* name, uint32_t* out_index)`
+
+Notes:
+- `set_*` auto-grows `count` up to the highest written index.
+- `find` is case-insensitive on entry names.
+
+### Context Palette Functions
+
+- `vg_set_palette(vg_context* ctx, const vg_palette* palette)`
+- `vg_get_palette(vg_context* ctx, vg_palette* out_palette)`
+
+New contexts default to a `WOPR`-style green ramp palette.
+
+## Pointer API (`vg_pointer.h`)
+
+### `vg_pointer_style`
+
+- `VG_POINTER_NONE`
+- `VG_POINTER_ASTEROIDS`
+- `VG_POINTER_CROSSHAIR`
+
+### `vg_pointer_desc`
+
+- `position`: screen position in pixels.
+- `size_px`: pointer size.
+- `angle_rad`: style rotation (used by `ASTEROIDS`, also ring phase basis for `CROSSHAIR`).
+- `phase`: optional animation phase/time value.
+- `stroke`: stroke style.
+- `fill`: fill style for optional center fill.
+- `use_fill`: when non-zero, style may render a center fill element.
+
+### `vg_draw_pointer(vg_context* ctx, vg_pointer_style style, const vg_pointer_desc* desc)`
+
+Draws a built-in vector pointer style at `desc->position`.
 
 ### `vg_backend_vulkan_desc`
 
@@ -533,7 +586,7 @@ Image stylization settings:
 - scanline shape: `scanline_pitch_px`, `min_line_width_px`, `max_line_width_px`, `line_jitter_px`
 - block graphics: `cell_width_px`, `cell_height_px`, `block_levels` (`2..32`)
 - output controls: `intensity`, `tint_color`, `blend`
-- palette/polarity flags: `use_crt_palette`, `invert`
+- palette/polarity flags: `use_crt_palette`, `use_context_palette`, `palette_index`, `invert`
 
 ### `vg_draw_image_stylized(vg_context* ctx, const vg_image_desc* src, vg_rect dst, const vg_image_style* style)`
 
@@ -562,6 +615,7 @@ Draw controls:
 - `fill_closed_paths`: when non-zero, attempts fill passes on closed paths.
 - `use_source_colors`: when non-zero, uses SVG fill/stroke colors when available.
 - `fill_intensity`, `stroke_intensity`: pass-level intensity scales.
+- `use_context_palette`: when non-zero and `palette` is null/empty, quantizes against context palette.
 - `palette`, `palette_count`: optional palette quantization for SVG colors.
 
 ### `vg_svg_load_from_file(const char* file_path, const vg_svg_load_params* params, vg_svg_asset** out_asset)`

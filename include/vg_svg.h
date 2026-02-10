@@ -23,6 +23,7 @@ typedef struct vg_svg_draw_params {
     int use_source_colors;
     float fill_intensity;
     float stroke_intensity;
+    int use_context_palette;
     const vg_color* palette;
     uint32_t palette_count;
 } vg_svg_draw_params;

@@ -34,6 +34,8 @@ typedef struct vg_image_style {
     vg_color tint_color;
     vg_blend_mode blend;
     int use_crt_palette;
+    int use_context_palette;
+    int palette_index;
     int invert;
     int use_boxed_glyphs;
 } vg_image_style;

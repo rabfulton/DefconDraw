@@ -1,4 +1,5 @@
 #include "vg_image.h"
+#include "vg_palette.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -41,7 +42,18 @@ vg_result vg_draw_image_stylized(
     }
 
     vg_color col = style->tint_color;
-    if (style->use_crt_palette) {
+    if (style->use_context_palette) {
+        vg_palette pal;
+        vg_get_palette(ctx, &pal);
+        uint32_t idx = 0u;
+        if (pal.count > 0u) {
+            if (style->palette_index >= 0) {
+                idx = (uint32_t)style->palette_index % pal.count;
+            }
+            col = pal.entries[idx].color;
+            col.a = 1.0f;
+        }
+    } else if (style->use_crt_palette) {
         vg_crt_profile crt;
         vg_get_crt_profile(ctx, &crt);
         float glow = vg_image_clampf(crt.beam_intensity / 2.0f, 0.0f, 1.0f);

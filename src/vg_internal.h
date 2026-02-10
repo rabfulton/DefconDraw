@@ -2,6 +2,7 @@
 #define VG_INTERNAL_H
 
 #include "vg.h"
+#include "vg_palette.h"
 
 typedef enum vg_cmd_type {
     VG_CMD_MOVE_TO,
@@ -44,6 +45,7 @@ struct vg_context {
     vg_frame_desc frame;
     vg_retro_params retro;
     vg_crt_profile crt;
+    vg_palette palette;
     vg_mat2x3 transform;
     vg_mat2x3 transform_stack[32];
     uint32_t transform_stack_count;

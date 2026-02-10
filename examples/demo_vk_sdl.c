@@ -1,5 +1,7 @@
 #include "vg.h"
 #include "vg_image.h"
+#include "vg_palette.h"
+#include "vg_pointer.h"
 #include "vg_svg.h"
 #include "vg_text_fx.h"
 #include "vg_text_layout.h"
@@ -57,6 +59,13 @@ typedef enum frame_result {
     FRAME_RECREATE = 1,
     FRAME_FAIL = 2
 } frame_result;
+
+typedef enum cursor_mode {
+    CURSOR_MODE_VECTOR_ASTEROIDS = 0,
+    CURSOR_MODE_VECTOR_CROSSHAIR = 1,
+    CURSOR_MODE_NONE = 2,
+    CURSOR_MODE_SYSTEM = 3
+} cursor_mode;
 
 typedef struct app {
     SDL_Window* window;
@@ -124,6 +133,13 @@ typedef struct app {
     float nav_repeat_timer;
 
     int scene_mode;
+    int cursor_mode;
+    int mouse_x;
+    int mouse_y;
+    int mouse_in_window;
+    int ui_drag_active;
+    int ui_drag_kind;
+    int ui_drag_param;
     star3 stars[320];
     int stars_initialized;
 
@@ -259,6 +275,10 @@ static float norm_range(float v, float lo, float hi) {
         return 0.0f;
     }
     return clampf((v - lo) / (hi - lo), 0.0f, 1.0f);
+}
+
+static float lerpf(float a, float b, float t) {
+    return a + (b - a) * t;
 }
 
 static vg_vec2 project_3d(float x, float y, float z, float w, float h, float fov_px, float cam_z) {
@@ -1875,6 +1895,170 @@ static void step_selected_text_param(app* a, int dir) {
     }
 }
 
+static void apply_selected_tweak_value01(app* a, int param, float value_01) {
+    value_01 = clampf(value_01, 0.0f, 1.0f);
+    vg_crt_profile crt = a->crt_profile_valid ? a->crt_profile : (vg_crt_profile){0};
+    if (!a->crt_profile_valid) {
+        vg_get_crt_profile(a->vg, &crt);
+    }
+
+    switch (param) {
+        case UI_PARAM_BLOOM_STRENGTH: crt.bloom_strength = lerpf(0.0f, 3.0f, value_01); break;
+        case UI_PARAM_BLOOM_RADIUS: crt.bloom_radius_px = lerpf(0.0f, 14.0f, value_01); break;
+        case UI_PARAM_PERSISTENCE: crt.persistence_decay = lerpf(0.70f, 0.985f, value_01); break;
+        case UI_PARAM_JITTER: crt.jitter_amount = lerpf(0.0f, 1.5f, value_01); break;
+        case UI_PARAM_FLICKER: crt.flicker_amount = lerpf(0.0f, 1.0f, value_01); break;
+        case UI_PARAM_BEAM_CORE: crt.beam_core_width_px = lerpf(0.5f, 3.5f, value_01); break;
+        case UI_PARAM_BEAM_HALO: crt.beam_halo_width_px = lerpf(0.0f, 10.0f, value_01); break;
+        case UI_PARAM_BEAM_INTENSITY: crt.beam_intensity = lerpf(0.2f, 3.0f, value_01); break;
+        case UI_PARAM_VIGNETTE: crt.vignette_strength = lerpf(0.0f, 1.0f, value_01); break;
+        case UI_PARAM_BARREL: crt.barrel_distortion = lerpf(0.0f, 0.30f, value_01); break;
+        case UI_PARAM_SCANLINE: crt.scanline_strength = lerpf(0.0f, 1.0f, value_01); break;
+        case UI_PARAM_NOISE: crt.noise_strength = lerpf(0.0f, 0.30f, value_01); break;
+        case UI_PARAM_LINE_WIDTH: a->main_line_width = lerpf(1.0f, 16.0f, value_01); break;
+        default: break;
+    }
+    clamp_crt_profile(&crt);
+    vg_set_crt_profile(a->vg, &crt);
+    a->crt_profile = crt;
+    a->crt_profile_valid = 1;
+}
+
+static void apply_selected_image_tweak_value01(app* a, int param, float value_01) {
+    value_01 = clampf(value_01, 0.0f, 1.0f);
+    switch (param) {
+        case IMAGE_UI_PARAM_THRESHOLD: a->image_threshold = lerpf(0.0f, 1.0f, value_01); break;
+        case IMAGE_UI_PARAM_CONTRAST: a->image_contrast = lerpf(0.25f, 4.0f, value_01); break;
+        case IMAGE_UI_PARAM_SCAN_PITCH: a->image_pitch_px = lerpf(1.0f, 10.0f, value_01); break;
+        case IMAGE_UI_PARAM_MIN_WIDTH:
+            a->image_min_width_px = lerpf(0.2f, 8.0f, value_01);
+            if (a->image_max_width_px < a->image_min_width_px) a->image_max_width_px = a->image_min_width_px;
+            break;
+        case IMAGE_UI_PARAM_MAX_WIDTH:
+            a->image_max_width_px = lerpf(0.2f, 12.0f, value_01);
+            if (a->image_max_width_px < a->image_min_width_px) a->image_max_width_px = a->image_min_width_px;
+            break;
+        case IMAGE_UI_PARAM_JITTER: a->image_jitter_px = lerpf(0.0f, 3.0f, value_01); break;
+        case IMAGE_UI_PARAM_BLOCK_W: a->image_block_cell_w_px = lerpf(2.0f, 40.0f, value_01); break;
+        case IMAGE_UI_PARAM_BLOCK_H: a->image_block_cell_h_px = lerpf(2.0f, 48.0f, value_01); break;
+        case IMAGE_UI_PARAM_BLOCK_LEVELS:
+            a->image_block_levels = (int)lroundf(lerpf(2.0f, 32.0f, value_01));
+            if (a->image_block_levels < 2) a->image_block_levels = 2;
+            if (a->image_block_levels > 32) a->image_block_levels = 32;
+            break;
+        case IMAGE_UI_PARAM_INVERT:
+            a->image_invert = value_01 >= 0.5f ? 1 : 0;
+            break;
+        default:
+            break;
+    }
+}
+
+static void apply_selected_text_tweak_value01(app* a, int param, float value_01) {
+    value_01 = clampf(value_01, 0.0f, 1.0f);
+    if (param == TEXT_UI_PARAM_BOX_WEIGHT) {
+        a->boxed_font_weight = lerpf(0.25f, 3.0f, value_01);
+    }
+}
+
+static int ui_kind_for_scene(const app* a) {
+    if (a->scene_mode == SCENE_IMAGE_FX) {
+        return 1;
+    }
+    if (a->scene_mode == SCENE_TITLE_CRAWL) {
+        return 2;
+    }
+    return 0;
+}
+
+static int ui_kind_item_count(int ui_kind) {
+    if (ui_kind == 1) return IMAGE_UI_PARAM_COUNT;
+    if (ui_kind == 2) return TEXT_UI_PARAM_COUNT;
+    return UI_PARAM_COUNT;
+}
+
+static float ui_kind_height(int ui_kind) {
+    if (ui_kind == 1) return k_ui_image_h;
+    if (ui_kind == 2) return k_ui_text_h;
+    return k_ui_h;
+}
+
+static int point_in_rectf(float x, float y, vg_rect r) {
+    return x >= r.x && y >= r.y && x <= (r.x + r.w) && y <= (r.y + r.h);
+}
+
+static void update_cursor_visibility(app* a) {
+    if (!a) {
+        return;
+    }
+    int show_system = (a->cursor_mode == CURSOR_MODE_SYSTEM) && a->mouse_in_window && !a->ui_drag_active;
+    SDL_ShowCursor(show_system ? SDL_ENABLE : SDL_DISABLE);
+}
+
+static int handle_ui_mouse(app* a, float mouse_x, float mouse_y_vg, int pressed) {
+    if (!a->show_ui) {
+        return 0;
+    }
+    int ui_kind = ui_kind_for_scene(a);
+    int item_count = ui_kind_item_count(ui_kind);
+    vg_rect panel_rect = {k_ui_x, k_ui_y, k_ui_w, ui_kind_height(ui_kind)};
+    if (!point_in_rectf(mouse_x, mouse_y_vg, panel_rect)) {
+        return 0;
+    }
+
+    float left = panel_rect.x + 16.0f;
+    float label_w = panel_rect.w * 0.40f;
+    float slider_x = left + label_w + 16.0f;
+    float slider_w = panel_rect.w - (slider_x - panel_rect.x) - 76.0f;
+    float row_y = panel_rect.y + 70.0f;
+    int hit = 0;
+    for (int i = 0; i < item_count; ++i) {
+        vg_rect row_rect = {left, row_y, panel_rect.w - 32.0f, k_ui_row_step - 10.0f};
+        vg_rect slider_rect = {slider_x, row_y + 2.0f, slider_w, k_ui_row_step - 14.0f};
+        if (point_in_rectf(mouse_x, mouse_y_vg, row_rect)) {
+            hit = 1;
+            if (ui_kind == 1) a->selected_image_param = i;
+            else if (ui_kind == 2) a->selected_text_param = i;
+            else a->selected_param = i;
+
+            if (pressed && point_in_rectf(mouse_x, mouse_y_vg, slider_rect)) {
+                float v01 = (mouse_x - slider_rect.x) / slider_rect.w;
+                if (ui_kind == 1) apply_selected_image_tweak_value01(a, i, v01);
+                else if (ui_kind == 2) apply_selected_text_tweak_value01(a, i, v01);
+                else apply_selected_tweak_value01(a, i, v01);
+                a->ui_drag_active = 1;
+                a->ui_drag_kind = ui_kind;
+                a->ui_drag_param = i;
+                SDL_CaptureMouse(SDL_TRUE);
+            }
+            break;
+        }
+        row_y += k_ui_row_step;
+    }
+    return hit;
+}
+
+static void handle_ui_mouse_drag(app* a, float mouse_x, float mouse_y_vg) {
+    (void)mouse_y_vg;
+    if (!a->ui_drag_active) {
+        return;
+    }
+    float panel_h = ui_kind_height(a->ui_drag_kind);
+    float left = k_ui_x + 16.0f;
+    float label_w = k_ui_w * 0.40f;
+    float slider_x = left + label_w + 16.0f;
+    float slider_w = k_ui_w - (slider_x - k_ui_x) - 76.0f;
+    float row_y = k_ui_y + 70.0f + (float)a->ui_drag_param * k_ui_row_step;
+    vg_rect slider_rect = {slider_x, row_y + 2.0f, slider_w, k_ui_row_step - 14.0f};
+    if (panel_h <= 0.0f || slider_rect.w <= 0.0f) {
+        return;
+    }
+    float v01 = (mouse_x - slider_rect.x) / slider_rect.w;
+    if (a->ui_drag_kind == 1) apply_selected_image_tweak_value01(a, a->ui_drag_param, v01);
+    else if (a->ui_drag_kind == 2) apply_selected_text_tweak_value01(a, a->ui_drag_param, v01);
+    else apply_selected_tweak_value01(a, a->ui_drag_param, v01);
+}
+
 static void handle_ui_hold(app* a, float dt) {
     const Uint8* ks = SDL_GetKeyboardState(NULL);
     int adjust_dir = (ks[SDL_SCANCODE_RIGHT] ? 1 : 0) - (ks[SDL_SCANCODE_LEFT] ? 1 : 0);
@@ -2468,14 +2652,18 @@ static vg_result draw_scene_synthwave(app* a, const vg_stroke_style* halo_s, con
     svg_main.blend = VG_BLEND_ADDITIVE;
     svg_main.intensity = main_s->intensity * 1.08f;
     svg_main.width_px = clampf(main_s->width_px * 0.95f, 0.9f, 2.6f);
-    vg_color pal[5] = {
-        {0.08f, 0.30f, 0.08f, 1.0f},
-        {0.12f, 0.48f, 0.14f, 1.0f},
+    vg_palette ctx_pal;
+    vg_get_palette(a->vg, &ctx_pal);
+    vg_color bright_pal[3] = {
         {0.18f, 0.72f, 0.22f, 1.0f},
-        {0.38f, 0.92f, 0.40f, 1.0f},
+        {0.26f, 0.88f, 0.30f, 1.0f},
         {0.82f, 1.00f, 0.86f, 1.0f}
     };
-
+    if (ctx_pal.count >= 5u) {
+        bright_pal[0] = ctx_pal.entries[2].color;
+        bright_pal[1] = ctx_pal.entries[3].color;
+        bright_pal[2] = ctx_pal.entries[4].color;
+    }
     float pulse = 0.96f + 0.08f * sinf(t * 0.9f);
     vg_svg_draw_params sp = {
         .dst = {
@@ -2488,10 +2676,11 @@ static vg_result draw_scene_synthwave(app* a, const vg_stroke_style* halo_s, con
         .flip_y = 1,
         .fill_closed_paths = 1,
         .use_source_colors = 1,
-        .fill_intensity = 0.65f,
-        .stroke_intensity = 1.0f,
-        .palette = pal,
-        .palette_count = 5u
+        .fill_intensity = 1.10f,
+        .stroke_intensity = 1.25f,
+        .use_context_palette = 0,
+        .palette = bright_pal,
+        .palette_count = 3u
     };
     sp.dst.x += (panel.w * 0.88f - sp.dst.w) * 0.5f;
     sp.dst.y += (panel.h * 0.86f - sp.dst.h) * 0.5f;
@@ -2828,6 +3017,9 @@ static vg_result draw_scene_image_fx(app* a, const vg_stroke_style* main_s, floa
     s_char.block_levels = a->image_block_levels;
     s_char.intensity = 0.95f;
     s_char.blend = VG_BLEND_ALPHA;
+    s_char.use_crt_palette = 0;
+    s_char.use_context_palette = 1;
+    s_char.palette_index = 3;
     s_char.use_boxed_glyphs = 0;
     vr = vg_draw_image_stylized(a->vg, &img, (vg_rect){w * 0.68f, h * 0.14f, w * 0.27f, h * 0.72f}, &s_char);
     if (vr != VG_OK) return vr;
@@ -2961,6 +3153,43 @@ static vg_result draw_teletype_overlay(app* a, float w, float h) {
     return VG_OK;
 }
 
+static vg_result draw_pointer_overlay(app* a, const vg_stroke_style* main_s, float t) {
+    if (!a->mouse_in_window) {
+        return VG_OK;
+    }
+    if (a->cursor_mode == CURSOR_MODE_NONE || a->cursor_mode == CURSOR_MODE_SYSTEM) {
+        return VG_OK;
+    }
+    (void)t;
+    float h = (float)a->swapchain_extent.height;
+    float py = h - (float)a->mouse_y;
+    vg_stroke_style ps = *main_s;
+    ps.blend = VG_BLEND_ALPHA;
+    ps.width_px = main_s->width_px * 0.95f;
+    ps.intensity = main_s->intensity * 1.05f;
+    vg_fill_style pf = {
+        .intensity = 1.0f,
+        .color = {0.9f, 1.0f, 0.92f, 0.95f},
+        .blend = VG_BLEND_ALPHA
+    };
+    float pointer_angle = 2.0943951f;
+    vg_pointer_style style = VG_POINTER_ASTEROIDS;
+    if (a->cursor_mode == CURSOR_MODE_VECTOR_CROSSHAIR) {
+        pointer_angle = 0.0f;
+        style = VG_POINTER_CROSSHAIR;
+    }
+    vg_pointer_desc pd = {
+        .position = {(float)a->mouse_x, py},
+        .size_px = 34.0f,
+        .angle_rad = pointer_angle,
+        .phase = 0.0f,
+        .stroke = ps,
+        .fill = pf,
+        .use_fill = 1
+    };
+    return vg_draw_pointer(a->vg, style, &pd);
+}
+
 static frame_result record_and_submit(app* a, uint32_t image_index, float t, float dt, float fps) {
     VkCommandBuffer cmd = a->command_buffers[image_index];
 
@@ -3092,6 +3321,12 @@ static frame_result record_and_submit(app* a, uint32_t image_index, float t, flo
             fprintf(stderr, "draw_debug_ui failed: %s\n", vg_result_string(vr));
             return FRAME_FAIL;
         }
+    }
+
+    vr = draw_pointer_overlay(a, &main_s, t);
+    if (vr != VG_OK) {
+        fprintf(stderr, "draw_pointer_overlay failed: %s\n", vg_result_string(vr));
+        return FRAME_FAIL;
     }
 
     vr = vg_end_frame(a->vg);
@@ -3260,6 +3495,7 @@ int main(void) {
     a.selected_image_param = 0;
     a.main_line_width = 1.5f;
     a.boxed_font_weight = 0.25f;
+    a.cursor_mode = CURSOR_MODE_VECTOR_CROSSHAIR;
     vg_text_fx_typewriter_set_rate(&a.tty_fx, 0.050f);
     a.cpu_hist.data = a.cpu_hist_buf;
     a.cpu_hist.capacity = sizeof(a.cpu_hist_buf) / sizeof(a.cpu_hist_buf[0]);
@@ -3277,6 +3513,7 @@ int main(void) {
     a.image_block_cell_h_px = 6.0f;
     a.image_block_levels = 16;
     a.image_invert = 0;
+    a.mouse_in_window = 1;
     vg_text_fx_typewriter_set_beep(&a.tty_fx, teletype_beep_cb, &a);
     vg_text_fx_typewriter_set_beep_profile(&a.tty_fx, 900.0f, 55.0f, 0.028f, 0.17f);
     vg_text_fx_typewriter_enable_beep(&a.tty_fx, 1);
@@ -3312,6 +3549,7 @@ int main(void) {
         cleanup(&a);
         return 1;
     }
+    update_cursor_visibility(&a);
 
     if (!create_instance(&a) ||
         !create_surface(&a) ||
@@ -3337,7 +3575,34 @@ int main(void) {
             } else if (ev.type == SDL_WINDOWEVENT) {
                 if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || ev.window.event == SDL_WINDOWEVENT_RESIZED) {
                     need_recreate = 1;
+                } else if (ev.window.event == SDL_WINDOWEVENT_ENTER) {
+                    a.mouse_in_window = 1;
+                    update_cursor_visibility(&a);
+                } else if (ev.window.event == SDL_WINDOWEVENT_LEAVE) {
+                    a.mouse_in_window = 0;
+                    update_cursor_visibility(&a);
+                } else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                    a.mouse_in_window = 0;
+                    a.ui_drag_active = 0;
+                    SDL_CaptureMouse(SDL_FALSE);
+                    update_cursor_visibility(&a);
                 }
+            } else if (ev.type == SDL_MOUSEMOTION) {
+                a.mouse_x = ev.motion.x;
+                a.mouse_y = ev.motion.y;
+                float my_vg = (float)a.swapchain_extent.height - (float)a.mouse_y;
+                if (a.ui_drag_active) {
+                    handle_ui_mouse_drag(&a, (float)a.mouse_x, my_vg);
+                }
+            } else if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                a.mouse_x = ev.button.x;
+                a.mouse_y = ev.button.y;
+                float my_vg = (float)a.swapchain_extent.height - (float)a.mouse_y;
+                (void)handle_ui_mouse(&a, (float)a.mouse_x, my_vg, 1);
+            } else if (ev.type == SDL_MOUSEBUTTONUP && ev.button.button == SDL_BUTTON_LEFT) {
+                a.ui_drag_active = 0;
+                SDL_CaptureMouse(SDL_FALSE);
+                update_cursor_visibility(&a);
             } else if (ev.type == SDL_KEYDOWN && !ev.key.repeat) {
                 if (ev.key.keysym.sym == SDLK_TAB) {
                     a.show_ui = !a.show_ui;
@@ -3359,6 +3624,9 @@ int main(void) {
                     set_scene(&a, SCENE_IMAGE_FX);
                 } else if (ev.key.keysym.sym == SDLK_SPACE) {
                     cycle_svg_asset(&a, +1);
+                } else if (ev.key.keysym.sym == SDLK_p) {
+                    a.cursor_mode = (a.cursor_mode + 1) % 4;
+                    update_cursor_visibility(&a);
                 } else if (ev.key.keysym.sym == SDLK_F5) {
                     save_profile(&a);
                 } else if (ev.key.keysym.sym == SDLK_F9) {
@@ -3374,6 +3642,9 @@ int main(void) {
         last = now;
         if (dt <= 0.0f) {
             dt = 1.0f / 60.0f;
+        }
+        if (!a.ui_drag_active) {
+            SDL_GetMouseState(&a.mouse_x, &a.mouse_y);
         }
         if (a.show_ui) {
             handle_ui_hold(&a, dt);

@@ -12,6 +12,8 @@ option(VG_BUILD_VK_SDL_EXAMPLE "Build Vulkan + SDL example" ON)
 add_library(vg STATIC
     src/vg.c
     src/vg_image.c
+    src/vg_palette.c
+    src/vg_pointer.c
     src/vg_svg.c
     third_party/libtess2/Source/bucketalloc.c
     third_party/libtess2/Source/dict.c
