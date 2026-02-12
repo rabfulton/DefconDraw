@@ -135,6 +135,7 @@ typedef struct vg_backend_vulkan_desc {
     void* render_pass;
     uint32_t vertex_binding;
     uint32_t max_frames_in_flight;
+    uint32_t raster_samples;
 } vg_backend_vulkan_desc;
 
 typedef enum vg_backend_type {

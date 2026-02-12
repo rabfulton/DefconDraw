@@ -170,6 +170,7 @@ All Vulkan handles are passed as opaque `void*` in the public header and interpr
 - `render_pass`: `VkRenderPass` used by internal pipeline path.
 - `vertex_binding`: vertex binding index for internally bound vertex buffer.
 - `max_frames_in_flight`: currently stored and defaulted; future frame resource sizing hook.
+- `raster_samples`: Vulkan sample count for internal pipeline rasterization (`1/2/4/8/16/32/64`). Defaults to `1` if unset/invalid.
 
 ## Context API
 
@@ -843,6 +844,7 @@ desc.api.vulkan.graphics_queue = (void*)graphics_queue;
 desc.api.vulkan.graphics_queue_family = graphics_qf;
 desc.api.vulkan.render_pass = (void*)render_pass;
 desc.api.vulkan.vertex_binding = 0;
+desc.api.vulkan.raster_samples = 1; /* use 4 for 4x MSAA render pass */
 vg_context_create(&desc, &ctx);
 
 vg_frame_desc frame = {

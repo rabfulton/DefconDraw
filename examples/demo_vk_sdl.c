@@ -1577,6 +1577,7 @@ static int create_vg_context(app* a) {
     desc.api.vulkan.render_pass = (void*)a->scene_render_pass;
     desc.api.vulkan.vertex_binding = 0;
     desc.api.vulkan.max_frames_in_flight = 2;
+    desc.api.vulkan.raster_samples = 1;
 
     vg_result r = vg_context_create(&desc, &a->vg);
     if (r != VG_OK) {

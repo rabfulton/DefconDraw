@@ -48,6 +48,7 @@ typedef struct vg_vk_backend {
     vg_retro_params retro;
     vg_crt_profile crt;
     uint64_t frame_index;
+    uint32_t raster_samples;
 
     vg_vec2* stroke_vertices;
     uint32_t stroke_vertex_count;
@@ -73,6 +74,21 @@ typedef struct vg_vk_backend {
 #endif
 #endif
 } vg_vk_backend;
+
+static uint32_t vg_vk_sanitize_raster_samples(uint32_t samples) {
+    switch (samples) {
+        case 1u:
+        case 2u:
+        case 4u:
+        case 8u:
+        case 16u:
+        case 32u:
+        case 64u:
+            return samples;
+        default:
+            return 1u;
+    }
+}
 
 /*
  * Vulkan backend entry points will live here.
@@ -364,7 +380,7 @@ static vg_result vg_vk_create_pipelines(vg_vk_backend* backend) {
     };
     VkPipelineMultisampleStateCreateInfo msaa = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+        .rasterizationSamples = (VkSampleCountFlagBits)backend->raster_samples
     };
 
     VkPipelineColorBlendAttachmentState blend_attachment = {
@@ -1313,8 +1329,10 @@ vg_result vg_vk_backend_create(vg_context* ctx) {
     if (backend->desc.vertex_binding > 15u) {
         backend->desc.vertex_binding = 0u;
     }
+    backend->desc.raster_samples = vg_vk_sanitize_raster_samples(backend->desc.raster_samples);
     backend->retro = ctx->retro;
     backend->crt = ctx->crt;
+    backend->raster_samples = backend->desc.raster_samples;
 
 #if VG_HAS_VULKAN
     backend->physical_device = (VkPhysicalDevice)backend->desc.physical_device;
