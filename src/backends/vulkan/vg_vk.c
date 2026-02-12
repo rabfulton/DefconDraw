@@ -786,6 +786,13 @@ static vg_result vg_vk_submit_recorded_draws(vg_vk_backend* backend) {
                     vkCmdDraw(backend->command_buffer, cmd->vertex_count, 1, cmd->first_vertex, 0);
                 }
             }
+            /* Restore full scissor so client rendering after vg_end_frame is not clipped. */
+            if (current_scissor.offset.x != scissor.offset.x ||
+                current_scissor.offset.y != scissor.offset.y ||
+                current_scissor.extent.width != scissor.extent.width ||
+                current_scissor.extent.height != scissor.extent.height) {
+                vkCmdSetScissor(backend->command_buffer, 0, 1, &scissor);
+            }
         }
     }
 #endif
