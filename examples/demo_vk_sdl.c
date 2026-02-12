@@ -351,6 +351,9 @@ static void set_scene(app* a, int mode) {
     vg_text_fx_typewriter_set_text(&a->tty_fx, k_scene_text[mode]);
     reset_teletype(a);
     if (mode == SCENE_TITLE_CRAWL) {
+        vg_text_fx_marquee_set_text(&a->scene7_marquee, "MARQUEE HELPER: LONG TEXT SCROLLS WITHIN BOX   ");
+        vg_text_fx_marquee_set_speed(&a->scene7_marquee, 70.0f);
+        vg_text_fx_marquee_set_gap(&a->scene7_marquee, 48.0f);
         vg_text_fx_marquee_reset(&a->scene7_marquee);
     }
 }
@@ -2935,7 +2938,6 @@ static vg_result draw_scene_title_crawl(app* a, const vg_stroke_style* halo_s, c
     vg_stroke_style marq_bd = cmp;
     marq_bd.width_px = 1.2f;
     marq_bd.intensity = 0.85f;
-    vg_fill_style marq_clip = {.intensity = 1.0f, .color = {0.0f, 0.0f, 0.0f, 1.0f}, .blend = VG_BLEND_ALPHA};
     return vg_text_fx_marquee_draw(
         a->vg,
         &a->scene7_marquee,
@@ -2946,8 +2948,7 @@ static vg_result draw_scene_title_crawl(app* a, const vg_stroke_style* halo_s, c
         &cmp,
         1.0f,
         &marq_bg,
-        &marq_bd,
-        &marq_clip
+        &marq_bd
     );
 }
 

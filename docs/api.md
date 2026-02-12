@@ -219,6 +219,31 @@ For Vulkan backend:
   - records `vkCmdDraw` for each recorded draw
   - uses internal pipeline path when available
 
+### `vg_clip_push_rect(vg_context* ctx, vg_rect rect)`
+
+Pushes an axis-aligned clip rectangle onto the clip stack.
+
+Requirements:
+- active frame
+- finite `rect` values
+- `rect.w > 0`, `rect.h > 0`
+
+Notes:
+- The pushed clip is transformed by the current transform and stored as screen-space AABB.
+- Nested clips are intersected with the current top-of-stack clip.
+
+### `vg_clip_pop(vg_context* ctx)`
+
+Pops one clip rectangle from the clip stack.
+
+Requirements:
+- active frame
+- non-empty clip stack
+
+### `vg_clip_reset(vg_context* ctx)`
+
+Clears all active clips. Called automatically by `vg_begin_frame`.
+
 ## Retro Parameters API
 
 ### `vg_set_retro_params(vg_context* ctx, const vg_retro_params* params)`
@@ -746,9 +771,12 @@ State/configuration helpers for scrolling text.
 Draws horizontally scrolling text inside a box with optional:
 - background fill (`panel_fill`)
 - border stroke (`panel_border`)
-- side clip masks (`clip_fill`)
 
 Supports all text draw modes via `vg_text_draw_mode`.
+
+Notes:
+- Uses real clip/scissor through `vg_clip_push_rect`/`vg_clip_pop`.
+- No side-mask parameter is required; clipping is handled by the clip stack/scissor path.
 
 ## Debug Raster API
 

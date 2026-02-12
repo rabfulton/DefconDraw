@@ -167,6 +167,9 @@ vg_mat2x3 vg_transform_get(vg_context* ctx);
 void vg_transform_translate(vg_context* ctx, float tx, float ty);
 void vg_transform_scale(vg_context* ctx, float sx, float sy);
 void vg_transform_rotate(vg_context* ctx, float radians);
+vg_result vg_clip_push_rect(vg_context* ctx, vg_rect rect);
+vg_result vg_clip_pop(vg_context* ctx);
+void vg_clip_reset(vg_context* ctx);
 
 vg_result vg_path_create(vg_context* ctx, vg_path** out_path);
 void vg_path_destroy(vg_path* path);
