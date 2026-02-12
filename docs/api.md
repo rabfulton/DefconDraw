@@ -487,12 +487,32 @@ Panel-level descriptor:
 - panel `rect`
 - optional `title_line_0`, `title_line_1`, `footer_line`
 - `items` + `item_count`
-- sizing: `row_height_px`, `label_size_px`, `value_size_px`
+- sizing: `row_height_px`, `label_size_px`, `value_size_px`, `value_text_x_offset_px`
 - styles: `border_style`, `text_style`, `track_style`, `knob_style`
+- optional `metrics` (`vg_ui_slider_panel_metrics`) for explicit paddings/margins/column sizing
 
 ### `vg_ui_draw_slider_panel(vg_context* ctx, const vg_ui_slider_panel_desc* desc)`
 
 Draws a reusable immediate-mode style debug panel with labeled sliders and value readouts.
+
+### `vg_ui_slider_panel_metrics`
+
+Explicit panel layout controls used by draw and hit-test layout queries:
+- paddings: `pad_left_px`, `pad_top_px`, `pad_right_px`, `pad_bottom_px`
+- title/row spacing: `title_line_gap_px`, `rows_top_offset_px`
+- columns: `label_col_frac`, `col_gap_px`, `value_col_width_px`
+- row internals: `row_label_height_sub_px`, `row_slider_y_offset_px`, `row_slider_height_sub_px`, `value_y_offset_px`
+- footer/text tuning: `footer_y_from_bottom_px`, `title_sub_size_delta_px`, `label_size_bias_px`, `footer_size_bias_px`
+
+### `vg_ui_slider_panel_default_metrics(vg_ui_slider_panel_metrics* out_metrics)`
+
+Fills default metrics matching legacy visual behavior.
+
+### `vg_ui_slider_panel_compute_layout(...)`
+### `vg_ui_slider_panel_compute_row_layout(...)`
+
+Layout query API that returns resolved panel/row rectangles and text anchors.
+Use these for host-side hit-testing to avoid geometry drift from duplicated formulas.
 
 ## Meter API (`vg_ui_ext.h`)
 
@@ -517,6 +537,17 @@ Meter descriptor:
 - value domain: `min_value`, `max_value`, `value`
 - presentation: `mode`, `segments`, `segment_gap_px`
 - text: `label`, `value_fmt`, `show_value`, `show_ticks`
+- scaling: `ui_scale`, `text_scale` (set `<=0` to use `1.0`)
+
+### `vg_ui_meter_linear_layout`
+### `vg_ui_meter_radial_layout`
+
+Resolved meter geometry for host-side interaction and labels.
+
+### `vg_ui_meter_linear_layout_compute(...)`
+### `vg_ui_meter_radial_layout_compute(...)`
+
+Layout query helpers for linear/radial meters.
 
 ### `vg_ui_meter_linear(vg_context* ctx, const vg_ui_meter_desc* desc, const vg_ui_meter_style* style)`
 
@@ -543,6 +574,7 @@ Graph descriptor:
 - value domain: `min_value`, `max_value`
 - text: `label`
 - display flags: `show_grid`, `show_minmax_labels`
+- scaling: `ui_scale`, `text_scale` (set `<=0` to use `1.0`)
 
 ### `vg_ui_history`
 
@@ -571,6 +603,7 @@ Histogram descriptor:
 - value domain: `min_value`, `max_value`
 - text: `label`, `x_label`, `y_label`
 - display flags: `show_grid`, `show_axes`
+- scaling: `ui_scale`, `text_scale` (set `<=0` to use `1.0`)
 
 ### `vg_ui_histogram(vg_context* ctx, const vg_ui_histogram_desc* desc, const vg_ui_graph_style* style)`
 
@@ -585,6 +618,7 @@ Pie/donut descriptor:
 - optional per-slice labels: `labels`
 - text: `label`
 - display flag: `show_percent_labels`
+- scaling: `ui_scale`, `text_scale` (set `<=0` to use `1.0`)
 
 ### `vg_ui_pie_chart(vg_context* ctx, const vg_ui_pie_desc* desc, const vg_stroke_style* outline_style, const vg_stroke_style* text_style)`
 
